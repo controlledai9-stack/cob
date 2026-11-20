@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { mkdtemp, writeFile, readFile, rm, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { cleanTranscript } from "../shared/audio";
 const exec = promisify(execFile);
 export async function transcribe(
   audio: ArrayBuffer,
@@ -43,7 +44,9 @@ export async function transcribe(
     await writeFile(wav, wavBytes);
     await exec(
       whisper,
-      ["-m", model, "-f", wav, "-l", "auto", "-otxt", "-of", output],
+      // -mc 0: no earlier text as context, which stops repetition loops;
+      // -sns: no invented non-speech tokens.
+      ["-m", model, "-f", wav, "-l", "auto", "-mc", "0", "-sns", "-otxt", "-of", output],
       {
         timeout: 120_000,
         windowsHide: true,
@@ -51,7 +54,7 @@ export async function transcribe(
         signal,
       },
     );
-    return (await readFile(`${output}.txt`, "utf8")).trim().slice(0, 8000);
+    return cleanTranscript(await readFile(`${output}.txt`, "utf8")).slice(0, 8000);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

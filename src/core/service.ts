@@ -532,6 +532,14 @@ export class CobbleService extends EventEmitter {
         return this.saveTeamSessionBrief(input);
       },
       promoteTeam: (id) => this.promoteTeam({}, id),
+      setReviewPolicy: (id, policy) => {
+        selected(id);
+        return this.setTeamReviewPolicy(policy);
+      },
+      setHelpers: (id, model) => {
+        selected(id);
+        return this.setTeamHelpers(model);
+      },
       detachAvailable: !!this.launchTeamDaemon,
       onChange: () => this.emit("team", null),
     });

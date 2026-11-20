@@ -1074,3 +1074,66 @@ test("questions about limits get a direct answer from usage data", async () => {
   assert.match(lines[2]!, /^Claude: 12% of its 5-hour limit, resets at /);
   assert.equal(lines.length, 3, "unused agents without usage are left out");
 });
+
+test("priority: sets the session priority from the chat, no confirmation", async () => {
+  for (const [text, want] of [
+    ["priority: dark mode and a settings page", "dark mode and a settings page"],
+    ["new priorities: Faster startup", "Faster startup"],
+    ["set the priority to export reports as PDF", "export reports as PDF"],
+    ["@planner priority — mobile layout", "mobile layout"],
+  ] as const)
+    assert.deepEqual(parse(text), { kind: "priority", text: want }, text);
+  assert.equal(parse("priority: x")!.kind, "invalid");
+  assert.equal(parse("what is the priority of this task?"), null);
+  const f = controlFixture();
+  const saved: unknown[] = [];
+  f.deps.saveSessionBrief = (_, input) => {
+    saved.push(input);
+    return { endDate: "2026-12-01" };
+  };
+  try {
+    const outcome = await f.center.handle(f.team.id, "priority: Dark mode everywhere");
+    assert.equal(outcome.type, "result");
+    assert.deepEqual(saved, [{ priority: "Dark mode everywhere" }]);
+    const text = outcome.type === "result" ? outcome.message.control?.result ?? outcome.message.text : "";
+    assert.match(text, /Pilot now plans toward: Dark mode everywhere/);
+    assert.match(text, /pilot until 2026-12-01/);
+  } finally {
+    f.store.close();
+  }
+});
+
+test("status says what to do when everything in the backlog is done", async () => {
+  const { controlStatusPlain } = await import("../src/core/team/control-commands");
+  const base = { runs: [], autopilot: { active: false }, daemon: { running: false }, lastMerges: [], usage: {} };
+  const done = controlStatusPlain({ ...base, queue: [] } as never);
+  assert.match(done, /everything in the backlog is done.*priority: .*pilot until/);
+  const waiting = controlStatusPlain({ ...base, queue: ["Add tests — done when: x"] } as never);
+  assert.match(waiting, /Say “start autopilot”/);
+});
+
+test("review policy and the local helper can be set from the chat", async () => {
+  assert.deepEqual(parse("review always"), { kind: "review-policy", policy: "always" });
+  assert.deepEqual(parse("set review policy to risky"), { kind: "review-policy", policy: "risky" });
+  assert.deepEqual(parse("helpers on"), { kind: "helpers", model: "on" });
+  assert.deepEqual(parse("Helpers OFF"), { kind: "helpers", model: "off" });
+  assert.deepEqual(parse("helper model qwen2.5-Coder:1.5b"), { kind: "helpers", model: "qwen2.5-Coder:1.5b" });
+  assert.equal(parse("please review the login code"), null, "ordinary requests still reach Cobble");
+  const f = controlFixture();
+  const calls: string[] = [];
+  f.deps.setReviewPolicy = (_, p) => (calls.push(`review:${p}`), p);
+  f.deps.setHelpers = (_, m) => (calls.push(`helpers:${m}`), { model: m === "off" ? null : m === "on" ? "qwen2.5-coder:1.5b" : m });
+  try {
+    const text = async (t: string) => {
+      const outcome = await f.center.handle(f.team.id, t);
+      assert.equal(outcome.type, "result", t);
+      return outcome.type === "result" ? outcome.message.control?.result ?? outcome.message.text : "";
+    };
+    assert.match(await text("review never"), /Review policy: never/);
+    assert.match(await text("helpers on"), /Local helper on: qwen2\.5-coder:1\.5b.*ollama pull/);
+    assert.match(await text("helpers off"), /Local helper off/);
+    assert.deepEqual(calls, ["review:never", "helpers:on", "helpers:off"]);
+  } finally {
+    f.store.close();
+  }
+});

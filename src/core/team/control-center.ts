@@ -42,8 +42,13 @@ export interface ControlCenterDeps {
   waitForRun(teamId: string, runId: string): Promise<unknown>;
   completeAutopilotRun(teamId: string, runId: string): Promise<unknown>;
   startAutopilot(teamId: string, options: AutopilotOptions): Promise<unknown>;
-  saveSessionBrief(teamId: string, input: { endDate: string }): unknown;
+  saveSessionBrief(
+    teamId: string,
+    input: { endDate?: string; priority?: string },
+  ): unknown;
   promoteTeam?(teamId: string): Promise<unknown>;
+  setReviewPolicy?(teamId: string, policy: string): string;
+  setHelpers?(teamId: string, model: string): { model: string | null };
   retry?(teamId: string, target: string): Promise<unknown>;
   reviewLater?(teamId: string, runId: string): Promise<unknown>;
   appHub?(teamId: string): Promise<AppHubSnapshot>;
@@ -244,6 +249,36 @@ export class ControlCenter {
     switch (command.kind) {
       case "add":
         throw new Error("Add must use proposal planning");
+      case "review-policy": {
+        if (!d.setReviewPolicy) throw new Error("Review policy is unavailable");
+        const policy = d.setReviewPolicy(teamId, command.policy);
+        return policy === "risky"
+          ? "Review policy: risky. Small, safe changes whose check passed skip the AI review; the rest are reviewed."
+          : policy === "always"
+            ? "Review policy: always. Every finished coding task gets an AI review."
+            : "Review policy: never. Finished work is not reviewed by an AI unless the planner asks.";
+      }
+      case "helpers": {
+        if (!d.setHelpers) throw new Error("Local helper settings are unavailable");
+        const { model } = d.setHelpers(teamId, command.model);
+        return model
+          ? `Local helper on: ${model}. Cobble never downloads it; if Ollama doesn't have it yet, run "ollama pull ${model}". Until then Cobble keeps its normal wording.`
+          : "Local helper off.";
+      }
+      case "priority": {
+        const brief = d.saveSessionBrief(teamId, { priority: command.text }) as
+          | { endDate?: string }
+          | undefined;
+        const automation = d.autopilotStatus(teamId);
+        return [
+          `Saved. Pilot now plans toward: ${command.text}`,
+          automation.pilot
+            ? "Pilot is on and uses it from its next round."
+            : brief?.endDate
+              ? `Say “pilot until ${brief.endDate}” to start building.`
+              : "Say “pilot until YYYY-MM-DD” to start building.",
+        ].join("\n");
+      }
       case "retry": {
         if (!d.retry) throw new Error("Retry service is unavailable");
         await d.retry(teamId, command.target);

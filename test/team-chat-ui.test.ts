@@ -173,7 +173,7 @@ test("Team Chat shows who said what, Cobble's checks and approval cards", () => 
 test("Team Chat without a run asks the planner, or explains what is missing", () => {
   const ready = render({});
   assert.match(ready, /aria-label="Message Cobble or the team"/);
-  assert.match(ready, /Ask the planner, or @planner start:/);
+  assert.match(ready, /Message Cobble, or @planner start:/);
   assert.match(ready, />Send</);
   assert.doesNotMatch(ready, /<textarea[^>]*disabled/);
   const plannerOnly = render({ canStart: false });
@@ -314,4 +314,39 @@ test("Team room shows teammates' agents and runs, and explains sharing", async (
   );
   assert.match(local, /Only on this computer/);
   assert.match(local, /Host or join this workspace/);
+});
+
+test("Your chat has a mic when the offline voice engine is available", async () => {
+  const withVoice = render({
+    api: {
+      teamChat: async () => messages,
+      sendTeamChat: async () => ({ runId: "r", started: false }),
+      transcribe: async () => "hello",
+    },
+  });
+  assert.match(withVoice, /class="ui-mic"[^>]*aria-label="Speak your message"/);
+  assert.doesNotMatch(render({}), /ui-mic/, "no mic without the voice engine");
+  const { voiceError } = await import("../src/renderer/voice-input");
+  const denied = Object.assign(new Error("Permission denied"), { name: "NotAllowedError" });
+  assert.match(voiceError(denied), /Privacy & security → Microphone/);
+  assert.match(voiceError(Object.assign(new Error("Requested device not found"), { name: "NotFoundError" })), /No microphone found/);
+  assert.match(
+    voiceError(new Error("Error invoking remote method 'cobble:transcribe': Error: Cobble's included voice files are missing. Reinstall Cobble to restore them.")),
+    /npm run prepare:runtime/,
+  );
+});
+
+test("voice: silence is caught before transcribing and looping text is cleaned", async () => {
+  const { encodeMonoWav, speechLevel, SILENCE_LEVEL, cleanTranscript } = await import("../src/shared/audio");
+  const tone = new Float32Array(16000);
+  for (let i = 0; i < tone.length; i++) tone[i] = 0.3 * Math.sin(i / 10);
+  const quiet = new Float32Array(16000 * 3).map((_, i) => ((i * 7919) % 13 - 6) / 6 * 0.001);
+  assert.ok(speechLevel(encodeMonoWav(tone)) > SILENCE_LEVEL);
+  assert.ok(speechLevel(encodeMonoWav(quiet)) < SILENCE_LEVEL);
+  assert.equal(
+    cleanTranscript("we are ready to come to the end of the day. we are ready to come to the end of the day. We are ready to come to the end of the day! [BLANK_AUDIO]"),
+    "we are ready to come to the end of the day.",
+  );
+  assert.equal(cleanTranscript("Add a footer. Then deploy it."), "Add a footer. Then deploy it.");
+  assert.equal(cleanTranscript(" [BLANK_AUDIO] "), "");
 });

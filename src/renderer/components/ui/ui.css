@@ -1193,3 +1193,64 @@
 .ui-chat-header.has-tabs .ui-chat-actions {
   justify-self: end;
 }
+
+/* ---------- Mic in Your chat ---------- */
+
+.ui-mic {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--card-bg);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.ui-mic:hover:not(:disabled) {
+  border-color: var(--border-hover);
+}
+
+.ui-mic:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 1px;
+}
+
+.ui-mic.recording {
+  border-color: #d93636;
+  background: #d93636;
+  color: #fff;
+  animation: ui-mic-pulse 1.2s ease-in-out infinite;
+}
+
+.ui-mic:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.ui-spin {
+  animation: ui-spin 0.9s linear infinite;
+}
+
+@keyframes ui-mic-pulse {
+  50% {
+    box-shadow: 0 0 0 6px rgba(217, 54, 54, 0.18);
+  }
+}
+
+@keyframes ui-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-mic.recording,
+  .ui-spin {
+    animation: none;
+  }
+}

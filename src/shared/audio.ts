@@ -32,6 +32,48 @@ export function encodeMonoWav(
   }
   return buffer;
 }
+/**
+ * Loudness of the loudest half-second of a 16-bit mono WAV (root mean square,
+ * 0 to 1). Near-silent recordings make the small speech model invent text.
+ */
+export function speechLevel(wav: ArrayBuffer, rate = 16000): number {
+  const samples = new Int16Array(wav.slice(44));
+  const window = Math.max(1, Math.floor(rate / 2));
+  let loudest = 0;
+  for (let start = 0; start < samples.length; start += window) {
+    const end = Math.min(samples.length, start + window);
+    let sum = 0;
+    for (let i = start; i < end; i++) sum += (samples[i]! / 32768) ** 2;
+    loudest = Math.max(loudest, Math.sqrt(sum / Math.max(1, end - start)));
+  }
+  return loudest;
+}
+
+/** Below this the recording counts as silence (about -46 dBFS). */
+export const SILENCE_LEVEL = 0.005;
+
+/**
+ * Removes the repeated sentences the small speech model produces when it loops
+ * ("the end of the day. the end of the day. ..."), keeping the first of each.
+ */
+export function cleanTranscript(text: string): string {
+  const sentences = text
+    .replace(/\[(?:blank_audio|silence|music|noise)\]|\((?:music|silence|noise)\)/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(/(?<=[.!?])\s+/)
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const kept: string[] = [];
+  for (const sentence of sentences) {
+    const key = sentence.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    kept.push(sentence);
+  }
+  return kept.join(" ");
+}
+
 export async function recordingToWav(
   recording: ArrayBuffer,
 ): Promise<ArrayBuffer> {

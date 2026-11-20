@@ -15,6 +15,9 @@ export type ControlCommand =
   | { kind: "autopilot"; parallel: number }
   | { kind: "pilot"; until: string }
   | { kind: "promote" }
+  | { kind: "priority"; text: string }
+  | { kind: "review-policy"; policy: "always" | "risky" | "never" }
+  | { kind: "helpers"; model: string }
   | { kind: "invalid"; command: string; reason: string };
 
 export function parseControlCommand(text: string): ControlCommand | null {
@@ -95,6 +98,35 @@ export function parseControlCommand(text: string): ControlCommand | null {
   if (/^(queue|backlog|what's next|show queue)$/.test(command))
     return { kind: "queue" };
   if (/^(help|commands)$/.test(command)) return { kind: "help" };
+  const review = /^(?:set )?review(?:s| policy)?(?: to)?:? (always|risky|never)$/.exec(
+    command,
+  );
+  if (review)
+    return { kind: "review-policy", policy: review[1] as "always" | "risky" | "never" };
+  // Model names keep their case: "helpers qwen2.5-coder:1.5b".
+  const helpers = /^(?:local )?helpers?(?: model)?:?\s+([\w.:/-]+)$/i.exec(raw);
+  if (helpers) {
+    const value = helpers[1]!;
+    return {
+      kind: "helpers",
+      model: /^(on|off)$/i.test(value) ? value.toLowerCase() : value,
+    };
+  }
+  // "priority: …", "new priorities: …", "set the priority to …"
+  const priority =
+    /^(?:@?planner[,:]?\s*)?(?:(?:set|change|update|new)\s+)?(?:the\s+|my\s+|session\s+)?priorit(?:y|ies)\s*(?::|-|—|\bto\b|\bis\b|\bare\b)\s*([\s\S]+)$/i.exec(
+      raw,
+    );
+  if (priority) {
+    const text = priority[1]!.trim();
+    return text.length >= 3 && text.length <= 600
+      ? { kind: "priority", text }
+      : {
+          kind: "invalid",
+          command: raw,
+          reason: "Say what to build next in a sentence or two, for example: priority: dark mode and a settings page.",
+        };
+  }
   if (/^(stop|pause|halt)( (all|everything|autopilot|pilot))?$/.test(command))
     return { kind: "stop" };
   if (/^(continue|resume|unpause|carry on)$/.test(command))
@@ -170,6 +202,12 @@ export function describeControlCommand(command: ControlCommand): string {
       return `Start Pilot until ${command.until}? This resets the session spend window.`;
     case "promote":
       return "Run the self-check promotion?";
+    case "priority":
+      return `Set the session priority: ${command.text}`;
+    case "review-policy":
+      return `Review policy: ${command.policy}`;
+    case "helpers":
+      return command.model === "off" ? "Turn the local helper off" : `Local helper: ${command.model}`;
     case "invalid":
       return command.reason;
   }
@@ -184,6 +222,9 @@ stop \u2014 stop Autopilot/Pilot and pause runs (confirmation required)
 continue \u2014 restore the stopped session (confirmation required)
 start autopilot [N|N at a time|xN|with N] \u2014 N is 1-4 (confirmation required)
 pilot until YYYY-MM-DD \u2014 reset the session spend window (confirmation required)
+priority: <what to build next> \u2014 Pilot plans its work toward it
+review always|risky|never \u2014 when finished work gets an AI review (default risky)
+helpers on|off|<model> \u2014 the optional small local Ollama helper
 promote / self-check / merge \u2014 run promotion (confirmation required)
 add <idea> / retry <target> / review later <run> / logs [run] / what needs me
 help \u2014 show commands
@@ -356,7 +397,9 @@ export function controlStatusPlain(input: ControlStatusInput): string {
       ? "Automation: Pilot is on and picks its own next work."
       : a.active
         ? `Automation: Autopilot is on, ${a.parallel ?? 1} ${(a.parallel ?? 1) === 1 ? "item" : "items"} at a time.`
-        : "Automation: off. Say \u201cstart autopilot\u201d to work through the backlog.",
+        : input.queue.length || live.length
+          ? "Automation: off. Say \u201cstart autopilot\u201d to work through the backlog."
+          : "Automation: off, and everything in the backlog is done. Tell Cobble what to build next (\u201cpriority: \u2026\u201d), then say \u201cpilot until YYYY-MM-DD\u201d.",
   );
   lines.push(
     input.queue.length

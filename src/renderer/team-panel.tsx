@@ -159,6 +159,7 @@ function TeamPanelContent({
             teamAppHubAction: desktop.teamAppHubAction,
             onTeam: desktop.onTeam,
             onChange: desktop.onChange,
+            transcribe: desktop.transcribe,
           }
         : undefined,
     [desktop],

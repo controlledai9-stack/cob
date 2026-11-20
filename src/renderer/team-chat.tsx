@@ -27,6 +27,7 @@ import {
   parseControlCommand,
 } from "../core/team/control-commands";
 import { parseStartCommand } from "../core/team/chat-command";
+import { MicButton, useVoiceInput } from "./voice-input";
 
 type ChatApi = Required<Pick<DesktopApi, "teamChat" | "sendTeamChat">> &
   Partial<
@@ -40,6 +41,7 @@ type ChatApi = Required<Pick<DesktopApi, "teamChat" | "sendTeamChat">> &
       | "teamControlConfirm"
       | "teamProposalAdd"
       | "teamProposalStartItem"
+      | "transcribe"
     >
   >;
 
@@ -243,6 +245,10 @@ export function TeamChat({
   const [hub, setHub] = useState<AppHubSnapshot>({ needsYou: [], health: [] });
   const [hubBusy, setHubBusy] = useState<string>();
   const [draft, setDraft] = useState("");
+  // Spoken words land in the box so you can read them before sending.
+  const voice = useVoiceInput(api.transcribe, (text) =>
+    setDraft((current) => (current.trim() ? `${current.trimEnd()} ${text}` : text)),
+  );
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
@@ -453,7 +459,7 @@ export function TeamChat({
   ) : live ? (
     <span>The planner is deciding the next step…</span>
   ) : (
-    <span>Nothing is running. Ask the planner anything.</span>
+    <span>Nothing is running. Ask Cobble anything.</span>
   );
 
   return (
@@ -542,9 +548,13 @@ export function TeamChat({
             <textarea
               aria-label="Message Cobble or the team"
               placeholder={
-                live
-                  ? "Message Cobble, or @coder1 / @T2 for one agent"
-                  : "Ask the planner, or @planner start: <goal>"
+                voice.recording
+                  ? "Listening\u2026 press the mic again to stop (up to 60 seconds)"
+                  : voice.transcribing
+                    ? "Turning your recording into text on this computer\u2026"
+                    : live
+                      ? "Message Cobble, or @coder1 / @T2 for one agent"
+                      : "Message Cobble, or @planner start: <goal>"
               }
               rows={1}
               maxLength={4000}
@@ -558,16 +568,24 @@ export function TeamChat({
                 }
               }}
             />
+            <MicButton voice={voice} />
             <button
               type="submit"
               className="ui-send"
               aria-label={explicitStart ? "Start run" : "Send"}
-              disabled={busy || blocked || !draft.trim()}
+              disabled={
+                busy || blocked || !draft.trim() || voice.recording || voice.transcribing
+              }
             >
               <SendIcon size={18} aria-hidden="true" />
               <span>{explicitStart ? "Start run" : "Send"}</span>
             </button>
           </form>
+          {voice.error && (
+            <p role="alert" className="error">
+              {voice.error}
+            </p>
+          )}
           {blocked && hint && <p className="small">{hint}</p>}
           {error && (
             <p role="alert" className="error">
@@ -587,7 +605,8 @@ export function TeamChat({
         )}
         {!inView.length && view === "you" && (
           <li className="agent-team-chat-empty">
-            Ask the planner about the project or discuss what to build next. To
+            Ask Cobble about the project or discuss what to build next, by
+            typing or with the mic. To
             start a run, write <code>@planner start: your goal</code>. Write{" "}
             <code>@codex …</code> or <code>@T2 …</code> to talk to one agent.
           </li>
