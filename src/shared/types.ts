@@ -1,0 +1,809 @@
+import type { AppHubSnapshot, AppHubAction } from "../core/team/app-hub";
+import type { UsageLimitsView } from "./usage-view";
+import type { AgentLimitConfig } from "../core/team/usage-limits";
+import type { PhoneNotifyView } from "../core/team/notify";
+export type { PhoneNotifyView } from "../core/team/notify";
+import type { RoomRoster, RoomRun } from "../core/team/room";
+export type { RoomRoster, RoomRun } from "../core/team/room";
+export interface AgentRoomView {
+  /** This Cobble is hosting or joined to the active team. */
+  shared: boolean;
+  roster: RoomRoster[];
+  /** Other members' runs (your own are in your Team Chat). */
+  runs: RoomRun[];
+  /** This member's id in the team. */
+  me?: string;
+  /** Agents you let teammates' planners use. */
+  lends: TeamAgentId[];
+  /** Your worker roles that run on a teammate's lent agent. */
+  teammateRoles: Partial<
+    Record<TeamRole, { memberId: string; agent: TeamAgentId }>
+  >;
+}
+import type {
+  SessionBrief,
+  SessionBriefInput,
+  AgentDetection,
+  ApprovalPolicy,
+  RunSnapshot,
+  TeamAgentId,
+  TeamBudget,
+  TeamMember,
+  TeamMemberInput,
+  TeamChatMessage,
+  TeamRole,
+  TeamRun,
+  UserAnswer,
+} from "../core/team/types";
+export type {
+  ChatProposal,
+  AgentDetection,
+  ApprovalPolicy,
+  TeamChatMessage,
+  RunSnapshot,
+  TeamAgentId,
+  TeamBudget,
+  TeamMember,
+  TeamMemberInput,
+  TeamRole,
+  TeamRun,
+  TeamTask,
+  TeamDecision,
+  TeamEvent,
+  UserAnswer,
+  UserQuestion,
+  SessionBrief,
+  SessionBriefInput,
+} from "../core/team/types";
+export type Availability = "available" | "focused" | "away";
+export type CompanionMode = "normal" | "idle" | "dragging";
+export type Classification = "covered" | "required" | "uncertain" | "extra";
+export type Tab = "Agents" | "Home" | "Chats" | "Teams" | "Invites" | "Profile";
+export interface TeamDaemonStatusView {
+  running: boolean;
+  stopping: boolean;
+  pid: number | null;
+  startedAt: number | null;
+  heartbeatAgeMs: number | null;
+  runs: string[];
+}
+
+export interface AutopilotOptions {
+  pilot?: boolean;
+  parallel?: number;
+  detach?: boolean;
+  backlogPath?: string;
+  maxRuns?: number;
+  checkCommand?: string;
+  shareDependencies?: boolean;
+  budget?: Partial<TeamBudget>;
+}
+
+export interface AutopilotStatus {
+  pilot?: boolean;
+  cycle?: number;
+  nextUp?: string[];
+  parallel?: number;
+  detach?: boolean;
+  currentRuns?: { item: string; runId: string }[];
+  active: boolean;
+  branch: string;
+  worktree: string;
+  backlogPath: string;
+  currentItem?: string;
+  runId?: string;
+  completed: { item: string; status: "merged" | "flagged"; runId: string }[];
+  stoppedReason?: string;
+}
+
+export interface Profile {
+  id: string;
+  name: string;
+  email: string;
+  avatar: string;
+  availability: Availability;
+  speak: boolean;
+}
+export interface PlanItem {
+  id: string;
+  kind: "goal" | "feature" | "constraint" | "milestone";
+  title: string;
+  text: string;
+  start: number;
+  end: number;
+}
+export interface PlanMemoryItem {
+  logicalId: string;
+  sourceItemId: string;
+  kind: PlanItem["kind"];
+  text: string;
+  start: number;
+  end: number;
+  ambiguous: boolean;
+  conditional: boolean;
+}
+export interface PlanRetrieval {
+  teamId: string;
+  planVersion: number;
+  sourceDigest: string;
+  engine: "fts5-bm25" | "lexical";
+  items: (PlanMemoryItem & { signals: string[] })[];
+  coverage: {
+    totalItems: number;
+    totalConstraints: number;
+    omittedItems: number;
+    omittedConstraints: number;
+    omittedCandidates: number;
+    queryTruncated: boolean;
+    pathsTruncated: boolean;
+    characterBudget: number;
+    characters: number;
+  };
+  purpose: "context_only";
+  exceptions?: {
+    evaluatedAt: string;
+    records: PlanException[];
+    omitted: number;
+    characters: number;
+  };
+}
+export interface Team {
+  id: string;
+  name: string;
+  code: string;
+  ownerId: string;
+  version: number;
+  plan: string;
+  items: PlanItem[];
+  workspace: string;
+  createdAt: string;
+  graph?: PlanGraph;
+  hosting?: { hostId: string; epoch: number; address: string };
+}
+export interface HostingCandidate {
+  memberId: string;
+  name: string;
+  cpuThreads: number;
+  memoryMB: number;
+  freeMemoryMB: number;
+  score: number;
+  willing: boolean;
+  reachable: boolean;
+  reason: string;
+  reportedAt: string;
+}
+export interface HostingState {
+  /** Present on the live backend; shared writes are temporarily queued. */
+  fenced?: boolean;
+  available: boolean;
+  phase:
+    | "local"
+    | "collecting"
+    | "evaluating"
+    | "preparing"
+    | "committing"
+    | "hosting"
+    | "following"
+    | "blocked";
+  hostId: string | null;
+  epoch: number;
+  automatic: boolean;
+  allowThisDevice: boolean;
+  advertisedAddress: string;
+  candidates: HostingCandidate[];
+  reason: string;
+}
+export interface ModulePlan {
+  id: string;
+  name: string;
+  ownerId?: string;
+  ownerIds?: string[];
+  pathGlob: string;
+  planItemIds: string[];
+  reviewerIds?: string[];
+}
+export interface ContractPlan {
+  id: string;
+  moduleId: string;
+  path: string;
+  name: string;
+  kind: "function" | "interface" | "type" | "class" | "table" | "endpoint";
+  signature: string;
+  version: number;
+}
+export interface PlanGraph {
+  version: number;
+  modules: ModulePlan[];
+  contracts: ContractPlan[];
+  dependencies: { from: string; to: string; source?: "manual" | "observed" }[];
+  exceptionPolicyVersion?: 1;
+  exceptions?: PlanException[];
+}
+export interface PlanException {
+  id: string;
+  requirementId: string;
+  planVersion: number;
+  membershipEpoch: number;
+  authorIds: string[];
+  paths: string[];
+  reason: string;
+  approvedBy: string;
+  approvedAt: string;
+  expiresAt: string;
+  revokedAt?: string;
+  restoredInactive?: true;
+}
+export interface PlanExceptionRequest {
+  expectedPlanVersion: number;
+  expectedGraphVersion: number;
+  requirementId: string;
+  authorIds: string[];
+  paths: string[];
+  reason: string;
+  expiresAt: string;
+}
+export interface ImpactFinding {
+  type: "ownership" | "contract" | "new_entity";
+  target: string;
+  moduleId?: string;
+  explanation: string;
+}
+export interface RevertPreview {
+  activityId: string;
+  token: string;
+  files: { path: string; patch: string; canApply: boolean; reason?: string }[];
+}
+export interface Member {
+  id: string;
+  name: string;
+  availability: Availability;
+  role: "owner" | "member";
+}
+export interface WorkCompletion {
+  id: string;
+  teamId: string;
+  itemId: string;
+  itemTitle: string;
+  planVersion: number;
+  authorId: string;
+  authorName: string;
+  note: string;
+  createdAt: string;
+}
+export interface MainProposal {
+  id: string;
+  teamId: string;
+  title: string;
+  authorId: string;
+  authorName: string;
+  sourceRef: string;
+  sourceSha: string;
+  targetRef: string;
+  baseSha: string;
+  planVersion: number;
+  graphVersion?: number;
+  exceptionPolicyKey?: string;
+  electorate: { id: string; name: string }[];
+  membershipEpoch: number;
+  policy: "unanimous" | "majority";
+  votes: { memberId: string; choice: "yes" | "no"; createdAt: string }[];
+  status: "open" | "approved" | "rejected" | "stale" | "integrated";
+  createdAt: string;
+  integratedSha?: string;
+  staleReason?: string;
+}
+export interface AgentPayload {
+  module: string;
+  files_changed: string[];
+  new_entities: { type: string; name: string; details: string }[];
+  contract_changes: { entity: string; old_shape: string; new_shape: string }[];
+  deviation_from_plan: boolean;
+  deviation_reason: string;
+  rich_explanation: string;
+  severity_self_assessment: "info" | "soft" | "hard";
+}
+export interface Change {
+  path: string;
+  before: string | null;
+  after: string | null;
+}
+export interface Assessment {
+  classification: Classification;
+  confidence: "high" | "low";
+  explanation: string;
+  planItemIds: string[];
+  alert: boolean;
+}
+export interface Activity extends Assessment {
+  observation?: {
+    capturedAt: string;
+    planVersion: number;
+    membershipEpoch: number;
+  };
+  id: string;
+  teamId: string;
+  authorId: string;
+  authorName: string;
+  source: "diff" | "agent";
+  paths: string[];
+  fingerprint: string;
+  planVersion: number;
+  createdAt: string;
+  resolution: "kept" | "dismissed" | "reverted" | null;
+  moduleIds?: string[];
+  impactedMemberIds?: string[];
+  findings?: ImpactFinding[];
+  resolutionNote?: string;
+  agentName?: string;
+  agentExplanation?: string;
+}
+export interface ChatMessage {
+  id: string;
+  teamId: string;
+  senderId: string;
+  recipientId: string | null;
+  content: string;
+  sentVia: "text" | "voice";
+  createdAt: string;
+  state: "local" | "queued" | "sent" | "delivered";
+  deliveredTo?: string[];
+}
+export interface IdeStatus {
+  state: "disconnected" | "files" | "linked" | "lost";
+  editor?: string;
+  workspace?: string;
+  lastSeen?: string;
+  focused?: boolean;
+  agent?: string;
+  agentLastSeen?: string;
+  processId?: number;
+  workspaceName?: string;
+  connections?: IdeConnection[];
+}
+export interface IdeConnection {
+  id: string;
+  editor: string;
+  focused: boolean;
+  lastSeen: string;
+}
+export interface DetectedIde {
+  id: string;
+  name: string;
+  running: boolean;
+  integration: boolean;
+  prepared?: boolean;
+  error?: string;
+}
+export interface JoinRequest {
+  id: string;
+  name: string;
+  deviceId: string;
+  state: "pending" | "accepted" | "declined";
+  createdAt: string;
+}
+export interface MonitoringStatus {
+  lastScan?: {
+    mode: "full" | "incremental";
+    readFiles: number;
+    readBytes: number;
+    dirtyPaths: number;
+    durationMs: number;
+  };
+  lastFullAt: string | null;
+  pendingPaths: number;
+  trackingEvents: boolean;
+  reconciliationPending: boolean;
+  reconcileIntervalMs: number;
+}
+export interface TeamGuardEntry {
+  id: string;
+  runId: string;
+  taskId: string;
+  taskTitle: string;
+  kind: "drift" | "secret" | "check";
+  passed?: boolean;
+  title: string;
+  detail: string;
+  paths: string[];
+  createdAt: string;
+}
+
+export interface AppState {
+  projects?: ProjectSummary[];
+  teamGuard?: TeamGuardEntry[];
+  review?: {
+    mode: "not-configured" | "preflight-only";
+    resourceControl?: "windows-appcontainer-configured" | "process-only";
+    semanticEnabled: false;
+    busy: boolean;
+  };
+  agentTracking?: {
+    protocolVersion: 1;
+    activeTurns: number;
+    pendingCheckpoints: number;
+    receipts: number;
+    coverage: "saved_checkpoints_at_hook_boundaries";
+  };
+  monitoring?: MonitoringStatus;
+  policy?: { pendingManagerChanges: number };
+  analysis?: {
+    pending: number;
+    running: number;
+    completed: number;
+    stale: number;
+    failed: number;
+    cancelled: number;
+    analyzerVersion: string;
+    semanticReview: false;
+  };
+  hosting: HostingState;
+  profile: Profile | null;
+  teams: Team[];
+  activeTeamId: string | null;
+  members: Member[];
+  activities: Activity[];
+  messages: ChatMessage[];
+  invites: JoinRequest[];
+  ide: IdeStatus;
+  paused: boolean;
+  watching: boolean;
+  companion: { mode: CompanionMode; availability: Availability };
+  network: {
+    role: "local" | "host" | "client";
+    state: string;
+    address?: string;
+    transport?: "lan" | "internet";
+    relayUrl?: string;
+  };
+  coverage: string[];
+  planHistory: { version: number; source: string; createdAt: string }[];
+  notifications: {
+    id: string;
+    title: string;
+    detail: string;
+    createdAt: string;
+  }[];
+  completions: WorkCompletion[];
+  proposals: MainProposal[];
+}
+
+export type ProjectStatus = "idle" | "running" | "needs_you";
+export interface ProjectSummary {
+  teamId: string;
+  name: string;
+  status: ProjectStatus;
+  latestGoal?: string;
+  latestRunId?: string;
+  latestRunState?: string;
+}
+export interface VoiceDraft {
+  type: "dm" | "broadcast" | "unrecognized" | "ambiguous";
+  recipientId?: string;
+  content: string;
+}
+export type Action =
+  | {
+      type: "profile";
+      name: string;
+      email: string;
+      avatar?: string;
+      speak?: boolean;
+    }
+  | { type: "createTeam"; name: string; plan: string; workspace?: string }
+  | { type: "deleteTeam"; teamId: string }
+  | { type: "selectTeam"; teamId: string }
+  | {
+      type: "updatePlan";
+      teamId: string;
+      expectedVersion: number;
+      plan: string;
+    }
+  | { type: "availability"; value: Availability }
+  | { type: "pause"; paused: boolean }
+  | {
+      type: "send";
+      recipientId: string | null;
+      content: string;
+      sentVia: "text" | "voice";
+    }
+  | { type: "deleteMessage"; messageId: string }
+  | { type: "resolve"; activityId: string; resolution: "kept" | "dismissed" }
+  | { type: "observe" }
+  | { type: "host"; relayUrl?: string; publicAddress?: string }
+  | { type: "join"; address: string; code: string }
+  | { type: "decideJoin"; requestId: string; accept: boolean };
+export type ExtendedAction =
+  | Action
+  | ({ type: "approvePlanException" } & PlanExceptionRequest)
+  | {
+      type: "revokePlanException";
+      exceptionId: string;
+      expectedPlanVersion: number;
+      expectedGraphVersion: number;
+    }
+  | { type: "configureHosting"; allow: boolean; address?: string }
+  | { type: "evaluateHosting" }
+  | { type: "refreshConnection"; address: string }
+  | { type: "completeWork"; itemId: string; note: string }
+  | { type: "proposeMain"; title: string; sourceRef: string }
+  | { type: "voteMain"; proposalId: string; choice: "yes" | "no" }
+  | {
+      type: "configureModule";
+      name: string;
+      pathGlob: string;
+      ownerId?: string;
+      ownerIds?: string[];
+      planItemIds: string[];
+      moduleId?: string;
+      reviewerIds?: string[];
+      dependsOn?: string[];
+    }
+  | { type: "captureContracts"; moduleId: string }
+  | { type: "revokeMember"; memberId: string }
+  | { type: "rotateCode" }
+  | { type: "acknowledgeNotice"; id: string }
+  | {
+      type: "amendFromActivity";
+      activityId: string;
+      text: string;
+      expectedVersion: number;
+    };
+export interface IntegrationDiagnostics {
+  checkedAt: string;
+  editors: {
+    name: string;
+    status:
+      | "detection-only"
+      | "extension-installed"
+      | "extension-missing"
+      | "probe-failed";
+    version?: string;
+    detail: string;
+  }[];
+  hooks: {
+    agent: "claude" | "cursor" | "gemini";
+    status:
+      | "no-workspace"
+      | "configured"
+      | "not-configured"
+      | "needs-repair"
+      | "check-failed";
+    detail: string;
+  }[];
+  bridge: { state: IdeStatus["state"]; editor?: string; agent?: string };
+  limitations: string[];
+}
+export interface DesktopApi {
+  integrationDiagnostics(): Promise<IntegrationDiagnostics>;
+  createBackup(): Promise<{
+    path: string;
+    bytes: number;
+    sameDeviceOnly: true;
+  } | null>;
+  restoreBackupCopy(): Promise<{ path: string; offline: true } | null>;
+  maintenance(days?: number): Promise<{
+    days: number;
+    cutoff: string;
+    databaseBytes: number;
+    activities: number;
+    messages: number;
+    queued: number;
+    revertBatches: number;
+    eligibleBatches: number;
+    eligibleBytes: number;
+  }>;
+  pruneLocalHistory(
+    days: number,
+  ): Promise<{ removedBatches: number; removedSourceBytes: number } | null>;
+  state(): Promise<AppState>;
+  action(action: ExtendedAction): Promise<AppState>;
+  chooseWorkspace(): Promise<string | null>;
+  onChange(callback: (state: AppState) => void): () => void;
+  open(tab?: Tab, startVoice?: boolean): Promise<void>;
+  companion(
+    command:
+      | "show"
+      | "hide"
+      | "interact"
+      | "drag-start"
+      | "drag-move"
+      | "drag-end"
+      | "menu-open"
+      | "menu-close"
+      | "pointer-on"
+      | "pointer-off",
+    point?: { x: number; y: number },
+  ): Promise<void>;
+  pairing(): Promise<{ port: number; token: string; workspace: string }>;
+  transcribe(audio: ArrayBuffer): Promise<string>;
+  bindWorkspace(): Promise<void>;
+  report(): Promise<string>;
+  searchPlan?(query: string): Promise<PlanRetrieval>;
+  artwork(): Promise<Partial<Record<CompanionMode, string>>>;
+  copyPairing(): Promise<void>;
+  detectIdes(): Promise<DetectedIde[]>;
+  connectIde(id?: string): Promise<string>;
+  installAgent(
+    agent: "claude" | "cursor" | "gemini",
+    remove?: boolean,
+  ): Promise<void>;
+  // Agent Team (docs/AGENT-TEAM-PLAN.md). Optional so older test doubles still type-check.
+  setTeamMaxCost?(runId: string, usd: number | null): Promise<RunSnapshot>;
+  teamUsageLimits?(): Promise<UsageLimitsView>;
+  teamBuildPlan?(): Promise<import("../core/team/build-plan").BuildPlanView>;
+  setTeamUsageStopAt?(percent: number): Promise<UsageLimitsView>;
+  setAgentUsageBudget?(
+    agent: TeamAgentId,
+    cfg: AgentLimitConfig | null,
+  ): Promise<UsageLimitsView>;
+  teamMembers?(): Promise<TeamMember[]>;
+  addTeamMember?(input: TeamMemberInput): Promise<TeamMember[]>;
+  updateTeamMember?(
+    name: string,
+    patch: Partial<TeamMemberInput>,
+  ): Promise<TeamMember[]>;
+  removeTeamMember?(name: string): Promise<TeamMember[]>;
+  teamRoles?(): Promise<Partial<Record<TeamRole, TeamAgentId>>>;
+  setTeamRole?(
+    role: TeamRole,
+    agent: TeamAgentId | null,
+  ): Promise<Partial<Record<TeamRole, TeamAgentId>>>;
+  detectTeamAgents?(): Promise<AgentDetection[]>;
+  testTeamAgent?(agent: TeamAgentId): Promise<{
+    ok: boolean;
+    exitCode: number;
+    signInNeeded: boolean;
+    rateLimited: boolean;
+    output: string;
+    durationMs: number;
+  }>;
+  teamDaemonStatus?(): Promise<TeamDaemonStatusView>;
+  startTeamRun?(
+    goal: string,
+    budget?: Partial<TeamBudget>,
+    policy?: Partial<ApprovalPolicy>,
+    /**
+     * checkCommand: e.g. "npm ci && npm test", run on every task's changes.
+     * shareDependencies: link the workspace's ignored node_modules into tasks.
+     * baseRef: branch the run starts from (default: the workspace's HEAD).
+     */
+    options?: {
+      checkCommand?: string;
+      shareDependencies?: boolean;
+      baseRef?: string;
+      retryAfterMinutes?: number;
+    },
+  ): Promise<TeamRun>;
+  planRoadmap?(o: {
+    goal: string;
+    backlogPath?: string;
+    items?: number;
+  }): Promise<RoadmapProposal>;
+  addRoadmap?(o: {
+    goal: string;
+    items: string[];
+    backlogPath?: string;
+  }): Promise<{ commit: string; added: string[] }>;
+  startAutopilot?(options?: AutopilotOptions): Promise<AutopilotStatus>;
+  stopAutopilot?(): Promise<AutopilotStatus>;
+  autopilotStatus?(): Promise<AutopilotStatus>;
+  teamRuns?(): Promise<TeamRun[]>;
+  teamRun?(runId: string): Promise<RunSnapshot>;
+  /** Shared agent room of a hosted/joined team: members' agents and runs. */
+  agentRoom?(): Promise<AgentRoomView>;
+  agentRoomChat?(runId: string): Promise<TeamChatMessage[]>;
+  /** Agents you let teammates' planners use. */
+  setLentAgents?(agents: TeamAgentId[]): Promise<AgentRoomView>;
+  /** Runs a worker role on a teammate's lent agent (memberId null clears). */
+  setTeammateRole?(
+    role: TeamRole,
+    memberId: string | null,
+    agent?: TeamAgentId,
+  ): Promise<AgentRoomView>;
+  sayInAgentRoom?(runId: string, message: string): Promise<AgentRoomView>;
+  /** Team Chat of a run, oldest first. */
+  teamChat?(runId: string): Promise<TeamChatMessage[]>;
+  /** Sends to a live run or the project planner; explicit start commands start runs. */
+  sendTeamChat?(
+    runId: string | null,
+    message: string,
+  ): Promise<{
+    runId: string | null;
+    started: boolean;
+    reply?: TeamChatMessage;
+    proposal?: TeamChatMessage;
+  }>;
+  teamControlConfirm?(
+    messageId: string,
+    yes: boolean,
+  ): Promise<TeamChatMessage>;
+  teamProposalAdd?(messageId: string): Promise<TeamChatMessage>;
+  teamProposalStartItem?(messageId: string, item: string): Promise<TeamRun>;
+  teamAppHub?(): Promise<AppHubSnapshot>;
+  teamAppHubAction?(action: AppHubAction, answer?: string): Promise<void>;
+  teamProjectChat?(): Promise<TeamChatMessage[]>;
+  startTeamProposal?(
+    messageId: string,
+    goal?: string,
+    budget?: Partial<TeamBudget>,
+    policy?: Partial<ApprovalPolicy>,
+    options?: Parameters<NonNullable<DesktopApi["startTeamRun"]>>[3],
+  ): Promise<TeamRun>;
+  teamCommand?(
+    runId: string,
+    command:
+      | "pause"
+      | "resume"
+      | "stop"
+      | "cleanup"
+      | "done"
+      | "approve"
+      | "skip"
+      | "deny",
+    taskId?: string,
+    note?: string,
+    /** Answers to an intake ("questions") gate, in question order. */
+    answers?: string[],
+  ): Promise<RunSnapshot>;
+  /** Backup agent per role, used once when the assigned agent hits a usage limit. */
+  teamBackupAgents?(): Promise<Partial<Record<TeamRole, TeamAgentId>>>;
+  setTeamBackupAgent?(
+    role: TeamRole,
+    agent: TeamAgentId | null,
+  ): Promise<Partial<Record<TeamRole, TeamAgentId>>>;
+  /** Roles running with full access (no agent sandbox), user opt-in. */
+  teamFullAccess?(): Promise<TeamRole[]>;
+  setTeamFullAccess?(roles: TeamRole[]): Promise<TeamRole[]>;
+  /** Project decisions saved from intake interviews. */
+  teamUserDecisions?(): Promise<UserAnswer[]>;
+  teamSessionBrief?(): Promise<{ brief: SessionBrief | null; askNow: boolean }>;
+  saveTeamSessionBrief?(input: SessionBriefInput): Promise<SessionBrief>;
+  skipTeamSessionBrief?(): Promise<{
+    brief: SessionBrief | null;
+    askNow: false;
+  }>;
+  clearTeamSessionBrief?(): Promise<null>;
+  sessionBriefDefaults?(): Promise<{ agents: TeamAgentId[] }>;
+  forgetTeamUserDecisions?(): Promise<UserAnswer[]>;
+  openTeamTerminal?(runId: string, taskId?: string): Promise<void>;
+  /** Phone alerts through ntfy. */
+  phoneNotify?(): Promise<PhoneNotifyView>;
+  setPhoneNotify?(patch: {
+    enabled?: boolean;
+    server?: string;
+    regenerateTopic?: boolean;
+  }): Promise<PhoneNotifyView>;
+  testPhoneNotify?(): Promise<PhoneNotifyView>;
+  onTeam?(callback: (runId: string | null) => void): () => void;
+  onTeamAttention?(
+    callback: (event: {
+      runId: string;
+      taskId?: string;
+      message: string;
+    }) => void,
+  ): () => void;
+  previewRevert(activityId: string): Promise<RevertPreview>;
+  applyRevert(activityId: string, token: string): Promise<void>;
+  integrateMain(proposalId: string): Promise<void>;
+  chatWindow?(
+    command:
+      | "show"
+      | "hide"
+      | "toggle"
+      | "minimize"
+      | "restore"
+      | "redirect"
+      | "status",
+  ): Promise<{ visible: boolean; minimized: boolean }>;
+  onChatWindowState?(
+    callback: (state: { visible?: boolean; minimized: boolean }) => void,
+  ): () => void;
+  onCompanion(callback: (mode: CompanionMode) => void): () => void;
+  onNavigate(callback: (tab: Tab, startVoice: boolean) => void): () => void;
+}
+
+export type RoadmapProposal = {
+  goal: string;
+  items: string[];
+  rejected: { line: string; reason: string }[];
+};

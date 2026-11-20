@@ -1,0 +1,285 @@
+# Cobble
+
+**Cobble is a workspace where your AI agents work as a team.** Give it a goal in the Team Chat. A planner agent splits the work, the other agents build, test and review it in their own Git branches, and you watch and steer in one conversation. Cobble checks every task against your plan (**Plan Guard**). Production deploys and sign-ins always wait for you. Use the agents you already have (Claude Code, Codex, Gemini CLI), pay-per-use API keys, or free and local models (Ollama, LM Studio, free API tiers). The app opens on **Agent Team**. Plan Guard, Discussions and Workspace & Plan are the side features. See [Agent Team CLI](#agent-team-cli) and [Team Chat](#team-chat).
+
+
+## Start in 5 minutes
+
+You need Windows, Node.js 24.13 or newer, Git, and at least one agent: Claude Code, Codex or Gemini CLI signed in on your PC, or a free local model through [Ollama](https://ollama.com) (no account needed).
+
+1. **Install and open the app** from this folder:
+
+   ```powershell
+   npm install
+   npm run build
+   npm start
+   ```
+
+2. **Create a project.** Click **New project**, give it a name, paste a short plan (a few lines of goals and rules) and choose your code folder.
+
+3. **Check your agents** and pick who does what. The app can do this on the **Agent Team** page; from a terminal:
+
+   ```powershell
+   npm run cli -- team detect
+   npm run cli -- team members add planner1 planner codex
+   npm run cli -- team members add coder1 coder codex
+   ```
+
+   No paid agent? Use a free local model: `npm run cli -- team model free ollama qwen3-coder`, then add members with the agent `free`.
+
+4. **Give the team a goal** in **Team Chat**: `@planner start: add a dark mode toggle`. The planner splits the work, the agents build and test it on their own branches, and you watch it happen in the chat.
+
+5. **Steer from the chat.** These answer at once, without an AI call:
+
+   - `status`: what is happening, in a few lines (`status details` for everything)
+   - `what needs me`: questions and approvals waiting for you
+   - `stop` / `continue`: pause everything, then pick up where it stopped
+   - `@coder1 …` or `@T2 …`: talk to one agent; anything else goes to the planner
+
+**Let it work for days:** answer the session brief once (`npm run cli -- team brief`), then start Pilot (`npm run cli -- team pilot`). Pilot asks the planner for the next work each cycle, waits out usage limits and keeps going until the brief's end date. A 3-minute walkthrough is in [docs/DEMO.md](docs/DEMO.md).
+
+Source 0.4.14 adds [AppContainer file/network isolation for the trusted preflight worker](docs/WINDOWS-REVIEW-CONTAINMENT.md), with zero network capabilities and authenticated OS accounting. No semantic model is enabled. Source 0.4.13 adds [Windows-enforced review-worker resource limits and crash cleanup](docs/WINDOWS-REVIEW-GUARD.md), without enabling model inference. Source 0.4.12 fixed relay socket cleanup and adds end-to-end network request deadlines; see [technical release verification and remaining gates](docs/TECHNICAL-RELEASE-0.4.12.md). Source 0.4.11 added the [independent-review import and adjudication workflow](docs/INDEPENDENT-REVIEW-WORKFLOW.md), with no automatic label adoption or semantic enablement. Source 0.4.10 added the [bounded review-worker preflight foundation](docs/REVIEW-WORKER-DELIVERY.md), without enabling a model or automatic semantic reviews. Source 0.4.9 added the [plan evaluation harness and a 63-case synthetic bootstrap](docs/PLAN-EVALUATION-DELIVERY.md); independent human review and the 300-case gate remain pending. Previous source deliveries added [agent receipts/Gemini CLI hooks](docs/AGENT-TURN-DELIVERY.md), [incremental monitoring](docs/INCREMENTAL-MONITORING-DELIVERY.md), [changed-function evidence](docs/CHANGED-SYMBOL-DELIVERY.md), [scoped exceptions](docs/PLAN-EXCEPTIONS-DELIVERY.md), [plan retrieval](docs/PLAN-MEMORY-DELIVERY.md) and [durable evidence](docs/ANALYSIS-EVIDENCE-DELIVERY.md). See [the backend execution plan](docs/BACKEND-EXECUTION-PLAN.md). Live provider verification and the optional semantic reviewer remain future work.
+
+UI update (28 October): Vyom's newer UI/window changes and the supplied Pebble reference animations are integrated. See [playback mapping and local testing](docs/PEBBLE-REFERENCE-INTEGRATION.md). The 0.4.2 installer below predates this source update; use `npm run dev` to test the latest UI.
+
+A local-first desktop workspace for a team's plan, saved code changes, and conversations. The UI integrates Vyom's refreshed themes, Discussions and mini-chat with the existing connection recovery, plan mapping, encrypted backup and safe-handover backend. See [backend delivery and UI contracts](docs/BACKEND-4-8-DELIVERY.md). The hosting panel is integrated in Workspace & Hosting; see [UI integration details](docs/UI-INTEGRATION-0.4.2.md).
+
+## Install the app
+
+The current local Windows x64 installer is `release/Cobble-Setup-0.4.2-x64.exe`. It includes Electron/Node, application dependencies, portable Git, the CPU voice engine and its DLLs, a default multilingual speech model, the editor integration package, and the Microsoft C++ runtime installer. Installation prepares those components automatically. End users do not install Node, npm packages, Git, FFmpeg, Python, whisper.cpp, or models separately, and the app downloads no voice files at first launch. Their chosen IDE and coding service remain separate products. The installer has not been published to GitHub; see [0.4.2 build evidence and checksum](docs/RELEASE-0.4.2.md).
+
+This is an unsigned development installer. A clean Windows VM installation and real multi-device testing remain release checks; building the installer is not evidence those checks passed.
+
+The older installers do not contain all current backend changes. Pulling Git source does not update an executable that was built earlier. Use the new 0.4.2 installer or rebuild current source, and confirm **Cobble 0.4.2** in the app window title or Profile settings. Hosting controls are available in Teams → Workspace & Hosting. Backup and maintenance settings presentation remains pending. Native dragging must be checked in the Windows Electron desktop window; a browser preview or headless/injected-input sandbox is a different test environment.
+
+## Run from source (developers only)
+
+Closing Cobble's main window exits the whole app, including Pebble and the tray icon. Shutdown stops workspace monitoring and local connections, cancels active transcription, and closes the database after cleanup.
+
+Requires Windows and Node.js 24.13+.
+
+```powershell
+npm install
+npm run prepare:runtime
+npm run build:extension
+npm run bundle:extension
+npm run dev
+```
+
+For a built application:
+
+```powershell
+npm run build
+npm start
+```
+
+Create your local profile, then a team with a required starting plan. Choose the project folder you want Cobble to watch. Your original plan is preserved exactly; headings/list lines become source-linked plan pieces. Plan edits save a new version.
+
+## What works
+
+- Electron/React desktop with Agent Team (home), Plan Guard, Discussions, Workspace & Plan, Join Requests and Profile.
+- SQLite storage for profiles, team membership, versioned plans, activities, messages, accepted decisions, and the delivery outbox.
+- Watching saved text files, including new files and deletions; restart baselines retain earlier observation state. Pre-existing edits are the initial baseline.
+- Conservative evaluations and an activity history. Explicit constraints such as `Do not modify \`legacy/\`` can produce a scope-conflict review. Unlisted helpers, tests, and ambiguous changes stay quiet. There is no claim to infer arbitrary semantic necessity.
+- Keep/dismiss decisions, stable batch fingerprints, five-minute alert cooldown, and Markdown reports. Reverts show the exact reverse patch, require local confirmation, and refuse overlapping or stale edits while preserving unrelated changes.
+- Work areas with multiple owners, reviewers, and explicit or observed dependencies. Public JS/TS shapes, simple routes, and SQL table shapes support structural-change review. Ordinary co-owner work stays quiet; scope alerts target the author and affected owners, while structural updates reach dependent owners and reviewers.
+- Explicit completed-work announcements, separate from ordinary file saves and agent turn endings.
+- Main integration proposals tied to an exact personal-branch commit, main revision, plan version, and member list. Every teammate must currently vote Yes explicitly; this unanimity rule is provisional pending the team's policy choice. Changed plan/membership or a moved main requires fresh approval. Cobble performs a reviewed local merge; it does not push or enforce remote branch protection against other Git clients.
+- Local IDE bridge and a VS Code extension for authenticated workspace pairing, save events, focus, heartbeat, and lost-connection state.
+- Encrypted team hosting on LAN, a directly reachable teammate laptop, or an optional teammate-hosted relay. Internet invitations explicitly trust the host certificate and pin its identity. Automatic host selection and planned handover preserve manager authority, team history, exact votes and queued work. Candidates opt in; all approved peers must verify reachability and acknowledge the next route. The trusted host can read private team traffic. No paid provider or automatic external fallback is configured. Blocked routers/ISPs can prevent cross-city connections. See [internet setup](docs/INTERNET-RELAY.md) and [handover scope](docs/HOST-HANDOVER-REVIEW.md).
+- Companion lifecycle: normal/chatting, idle edge docking, and dragging/hanging. Artwork is intentionally absent; a plain controls placeholder is used.
+- Voice recording with explicit start/stop/cancel, a bundled CPU transcription engine and default multilingual model, recipient parsing, editable preview, and optional OS speech confirmation.
+
+## Connect the IDE
+
+Choose the local project folder in **Teams**, then choose **Connect IDE**. Cobble detects a standard VS Code or Cursor installation, installs its bundled extension through that editor's CLI, and opens the folder. The extension discovers Cobble's local pairing file and refreshes its token automatically for the matching folder. No editor-marketplace download or copying JSON is required in the ordinary flow. Editor auto-installation still needs validation against real installed editor versions; custom installation locations are not detected yet.
+
+Manual pairing is available under Connection diagnostics for development. The **Cobble extension** F5 launch configuration starts an Extension Development Host. Teams also offers project-local Claude Code and Cursor hooks, preserving other hook settings. Authenticated context and turn events establish agent linkage separately from IDE heartbeat. Saved diffs remain the evidence source; arbitrary agent claims cannot create a verified violation. Hook configuration and synthetic event workflows are tested; real agent/editor version compatibility remains a manual check. The folder watcher operates independently while the IDE is disconnected. Unsaved buffers and remote/virtual editor workspaces are outside current coverage.
+
+## Invite teammates
+
+The owner chooses **Host this team**, then shares the full HTTPS address (including the `#` fingerprint) and join code. The new member chooses **Join a team** and submits both. The owner accepts in **Invites**. The member then chooses their own local workspace folder. All devices need a reachable route to the host and an OS firewall rule allowing that host process. A short code alone cannot discover an internet host.
+
+Direct messages and targeted notices are filtered at the host before sync. The host can read messages; this build does not provide end-to-end encryption. Delivery receipts confirm receipt on a device, not that a person has read it. On host shutdown messages remain queued with retry backoff and jitter. Restarting hosting on the same device reuses its encrypted certificate and port. Per-team encrypted sessions survive switching teams. The hosting backend supports planned transfer to a substantially better reachable laptop with a durable old-host write fence; it does not provide crash failover. The Teams hosting dialog presents initial hosting, candidacy, host evaluation and route diagnostics.
+
+## Companion art
+
+Your artist can add `normal.png`, `idle.png`, and `dragging.png` under [assets/companion](assets/companion/README.md). No animation is needed. The app reads those optional images at startup; keep their dimensions/baselines consistent. The placeholder currently opens the quick menu and exposes availability, core plan, mic/chat, and pause/resume.
+
+Idle controls dock to a screen edge after 45 seconds. The widget does not attach to a specific native editor window yet. It does not read the screen or speak continuously while idle. **Voice message** opens the chat view and requests microphone capture; stopping produces an editable draft. Sending always requires a separate confirmation.
+
+## Included offline voice
+
+Voice works from the installed app without environment variables or extra downloads. Cobble converts recordings into mono WAV internally, then uses the included whisper.cpp CPU engine and multilingual tiny model. No GPU, FFmpeg, or Python is required. Audio is bounded to 60 seconds, stays local, and temporary files are removed after transcription. Microphone permission is requested on explicit recording. Accuracy depends on the language, microphone, and model; preview the draft before sending.
+
+The build downloads from pinned official sources, verifies engine/model hashes, checks the Microsoft runtime signature, and includes voice license notices. `npm run prepare:runtime` is a developer build step; it is never presented to end users. The actual bundled engine/model have passed offline sample transcription on this computer. Real microphone and clean-machine tests remain to be performed.
+
+## Build a complete Windows download
+
+```powershell
+npm run dist:win
+```
+
+This verifies/prepares the voice runtime, builds the application and VSIX, and produces the self-contained NSIS installer. It does not publish anything externally. The required Windows C++ runtime is included and installed silently as part of normal app installation. All other runtime files are copied from the installer, not fetched on first launch.
+
+## CLI
+
+```powershell
+npm run cli -- init --name "Builders" --plan-file .\plan.md --workspace C:\projects\my-app
+npm run cli -- status
+npm run cli -- ingest --file .\agent-response.txt
+npm run cli -- report
+```
+
+Without name/plan flags, init prompts interactively. Finish a multiline plan with `END`. `ingest --stdin` accepts JSON or a fenced `cobble` payload; `--from-transcript` additionally accepts `{ "assistant_message": "..." }`. No arbitrary transcript file paths are followed. Cobble assigns trusted identity metadata locally and verifies actual saved changes. Enable supported project hooks from Teams; real-tool compatibility must still be checked with the exact installed versions.
+
+The default desktop/CLI database is `%APPDATA%\cobble\cobble.sqlite`; CLI `--data PATH` isolates a database. Reports go to `.cobble/reports/` in the watched project. Do not run multiple independent watchers against the same database; use desktop monitoring or a CLI ingest workflow. Source snapshots are stored locally for comparison, with private/dependency/generated paths excluded and file/byte caps recorded as coverage gaps.
+
+## Agent Team CLI
+
+`--data PATH` uses a separate SQLite database. The default is `%APPDATA%\cobble\cobble.sqlite` on Windows (`~/.config/cobble/cobble.sqlite` otherwise, when `APPDATA` is unset). Create a plan file first, then initialize an isolated trial:
+
+```powershell
+npm run cli -- --data .\.cobble\team-trial.sqlite init --name "Trial" --display-name "Me" --plan-file .\plan.md --workspace C:\projects\my-app
+```
+
+`--display-name` is only needed when that database has no profile yet. Pass the same `--data` on every later command, as below. Do not run `team run` while the desktop app is open on the same data.
+
+Detect lists agent CLIs and checks installed versions; it only runs `<cli> --version` for CLIs found on PATH. The optional `team test AGENT` performs a one-line headless round trip and **does call the agent**.
+
+```powershell
+npm run cli -- --data .\.cobble\team-trial.sqlite team detect
+npm run cli -- --data .\.cobble\team-trial.sqlite team test claude
+npm run cli -- --data .\.cobble\team-trial.sqlite team roles
+npm run cli -- --data .\.cobble\team-trial.sqlite team role planner claude
+npm run cli -- --data .\.cobble\team-trial.sqlite team role coder codex
+```
+
+`team role ROLE AGENT|none` assigns or clears a role. `team backup` lists backup agents; `team backup ROLE AGENT|none` sets or clears the backup used when a role's agent hits a usage limit. `team access` lists roles with **FULL ACCESS (no agent sandbox)**; `team access ROLE...` sets those roles and `team access none` clears them.
+
+```powershell
+npm run cli -- --data .\.cobble\team-trial.sqlite team backup
+npm run cli -- --data .\.cobble\team-trial.sqlite team backup coder claude
+npm run cli -- --data .\.cobble\team-trial.sqlite team access
+npm run cli -- --data .\.cobble\team-trial.sqlite team access coder deployer
+npm run cli -- --data .\.cobble\team-trial.sqlite team access none
+```
+
+Phone alerts use ntfy: `team notify status|on|off|test|new-topic|server URL` shows settings, toggles alerts, sends a test, regenerates the topic, or sets the server.
+
+```powershell
+npm run cli -- --data .\.cobble\team-trial.sqlite team notify status
+```
+
+Runs require a planner and at least one worker role (coder, generator, reviewer or deployer); all assigned agents must have installed CLIs. Run syntax is `team run "GOAL" [--max-tasks N] [--max-turns N] [--check "npm test"] [--base BRANCH] [--share-deps]`. Budgets are whole numbers: `--max-tasks` 1-100 and `--max-turns` 1-50. `--base` selects the starting branch; `--share-deps` links the workspace's existing, git-ignored `node_modules` into task worktrees.
+
+```powershell
+npm run cli -- --data .\.cobble\team-trial.sqlite team run "Build the next plan item" --max-tasks 5 --max-turns 10 --check "npm test"
+npm run cli -- --data .\.cobble\team-trial.sqlite team resume
+npm run cli -- --data .\.cobble\team-trial.sqlite team stop
+npm run cli -- --data .\.cobble\team-trial.sqlite team status
+```
+
+`team resume [RUN_ID] [--max-turns N]` resumes the latest or specified run and can raise its turn budget. `team stop [RUN_ID]` stops it, keeping branches. `team status [RUN_ID]` prints the latest or specified run as JSON. `team runs [--json]` lists recent runs (id, state, goal, branch, updated time), newest first. With no runs, `team status`, `team stop`, and `team runs` print `No team runs yet.`
+
+Autopilot works through Markdown checklist items such as `- [ ] Add X` on `cobble/autopilot`, created from the current HEAD if absent. The backlog must be a Git-tracked, regular `.md` file inside that branch's worktree, with no links or junctions anywhere in its path; commit it on that branch before running. Syntax: `team autopilot [--backlog docs/BACKLOG.md] [--max-runs 3] [--check CMD] [--share-deps] [--base BRANCH]`. `--max-runs` accepts whole numbers 1-20 (default 3). Autopilot also accepts `--max-tasks N` and `--max-turns N` per run, with the same ranges as `team run`. Although the CLI accepts `--base`, autopilot always starts each item from `cobble/autopilot`.
+
+```powershell
+npm run cli -- --data .\.cobble\team-trial.sqlite team autopilot --backlog docs/BACKLOG.md --max-runs 3 --check "npm test" --share-deps
+```
+
+`team decisions [forget]` shows or forgets project decisions saved from intake interviews.
+
+### Work that runs for days
+
+- `team run|resume ... --retry-after MINUTES` (5-720, default 60): when an agent hits its usage limit and no backup is set, the run pauses and resumes on its own, at most 6 times. Pausing or stopping the run cancels a pending retry.
+- `team run|resume|autopilot|pilot ... --max-cost USD`: a spending cap for paid API models. The run pauses when it is reached; raise it with `team resume RUN --max-cost 20`. Subscription logins (Claude Code with claude.ai, Codex with ChatGPT) are not billed per token; Cobble labels their figures "API-equivalent value".
+- `team run|resume ... --detach` hands the run to the background daemon so it keeps going after the terminal closes. `team daemon [status|stop]` runs or inspects it; `team daemon install` adds an OS watchdog that restarts it after sleep or a reboot.
+- `team brief` asks five questions once (time, budget, priorities); `team pilot [--parallel 1-4]` then keeps choosing and running backlog work until the brief ends, with one short phone message per cycle.
+- `team roadmap "BIG GOAL" [--items N]` turns one big goal into backlog items. `team digest [--since HOURS] [--phone]` summarises what happened.
+- `team say [RUN_ID] "message"` and `team answer [RUN_ID] [TASK_ID] done|skip|deny ["note"]` let a terminal or another agent talk to a run. Production approvals stay with you.
+- `team limits AGENT --budget TOKENS --window HOURS` sets a usage budget; Cobble stops giving that agent new work at 95% (`--stop-at 50-100`).
+- `team members` lists named members (planner1, coder1, …); `team members add NAME ROLE AGENT [--model NAME]` adds one, with an optional model per member.
+
+### Team Chat
+
+The Agent Team panel opens on **Team Chat**, one conversation per run. Type what to build and press **Start**. The planner answers in the chat, and the agents post as they work: which tasks were handed out, workers' questions and the answers, finished work, Cobble's test results and **plan guard** warnings when a task drifts from your plan. Production approvals and sign-ins show up as cards that only you can answer.
+
+- A plain message goes to the planner. It wakes up for it even while workers are busy.
+- `@codex …`, `@coder …` or `@T2 …` addresses one agent's task. If that agent is waiting on a question, your message answers it directly. Otherwise the planner passes it on.
+- `team chat [RUN_ID]` prints the chat in the terminal; `cobble chat [--project NAME]` is the same chat as an interactive prompt.
+- Plain commands control Cobble itself, with no AI call: `status` (a few plain lines), `status details`, `what needs me`, `logs [run]`, `queue`, `add <idea>`, `retry <run or task>`, `review later <run>`, `start autopilot 2 at a time`, `pilot until YYYY-MM-DD`, `stop`, `continue`, `promote` and `help`. Starting and stopping work asks you to confirm.
+
+### Team room: several people, each with their own agents
+
+When the workspace is hosted or joined (Workspace & Plan → Workspace & Hosting), every member's Cobble shares its agents and runs over the team's existing encrypted connection. Each person brings their own agents: subscriptions, API keys or free local models.
+
+- **Team room** under the Team Chat lists each member's ready agents and roles, plus teammates' runs with their live chat.
+- You can write into a teammate's run. Their planner gets it as a teammate's suggestion and decides how to use it.
+- Only the run's owner can answer their workers directly, approve deploys or complete sign-ins. The host checks every shared event and records who sent it from the authenticated connection.
+
+**Using a teammate's agent.** In the Team room, each member can **lend** their agents (for example "lend my Codex"). You can then give your **coder**, **generator** or **reviewer** role to a teammate's lent agent. The planner and the deployer always stay on your own PC. The code travels through your shared Git remote named `origin`, for example your GitHub repository:
+
+1. Your Cobble pushes the task's starting point to a `cobble/<run>/<task>` branch and sends the task through the team room.
+2. Their Cobble runs it on its own copy of that branch with their agent. It is always sandboxed: no full access and no network.
+3. It commits the work without secret files and pushes it back to the same branch.
+4. Your Cobble fetches it, accepts only a fast-forward with no secret files, and then runs your usual checks, plan guard and merge.
+
+Each person pays for their own agents, and `main` is never touched. To try it on two computers, follow [the two-PC test](docs/TWO-PC-TEST.md). Both of you need push access to the repository. If Git asks for a sign-in, the task pauses with a "sign in" card.
+
+### Without an AI subscription: API and free models
+
+Two team members need no coding-agent subscription. They work through Cobble's own file tools, which stay inside the task's worktree and never touch `.git` or secret files. Commands run only for roles with full access.
+
+- **`free`**: a free or local model through any OpenAI-compatible server.
+  - **Free and on your PC:** Ollama or LM Studio. No key is needed.
+  - **Free hosted tiers:** Gemini, OpenRouter or Groq. Set `GEMINI_API_KEY`, `OPENROUTER_API_KEY` or `GROQ_API_KEY` in your own environment.
+- **`claude-api`**: Claude through Anthropic's API. Pay per use with your own `ANTHROPIC_API_KEY`. The default model is `claude-opus-5-5`.
+
+Cobble reads these keys from the environment when it calls the provider. It never stores, prints or commits them.
+
+```powershell
+npm run cli -- --data .\.cobble\team-trial.sqlite team model
+npm run cli -- --data .\.cobble\team-trial.sqlite team model free ollama qwen3-coder
+npm run cli -- --data .\.cobble\team-trial.sqlite team role coder free
+npm run cli -- --data .\.cobble\team-trial.sqlite team model claude claude-opus-5-5 high
+npm run cli -- --data .\.cobble\team-trial.sqlite team role planner claude-api
+```
+
+`team detect` checks that the server is reachable and the model exists. `team status` shows each run's tokens and estimated cost (`usage`).
+
+### Drive Cobble from another agent (MCP)
+
+`cobble mcp [--data PATH]` runs Cobble as an MCP server over stdio. Another agent can then start runs, read status, answer the planner's questions, and pause, resume or stop runs. It cannot approve production deploys, complete sign-ins or change the team's configuration. Those stay with a human in the desktop app, the terminal or the phone.
+
+## Verify
+
+```powershell
+npm run typecheck
+npm test
+npm run build
+npm run test:desktop
+npm run test:shutdown
+npm run test:voice
+npm run test:packaged
+```
+
+The automated tests cover exact plans, conservative findings, agent authentication/configuration, canonical public shapes, safe reverts, actual bundled-Git merges, encrypted backup/offline recovery, refreshed invitations, receipt batching and five/eight logical-client workflows on one machine. The desktop smoke test uses an isolated profile under ignored `.cobble/`, exercises rendered profile/plan/work-area/completion/vote/chat/activity screens, performs a real approved merge, previews a revert, checks IDE authentication and companion poses, round-trips a backup through Windows secure storage and saves screenshots there. It never seeds the user's real profile.
+
+`npm run test:editors` checks actual installed editor CLIs and installs the included VSIX only in temporary profiles. `npm run diagnose:integrations` reports capabilities without launching editor windows. `npm run test:soak` exercises durable queues and repeated restarts; its duration/peer/history settings and measured results are in [the delivery report](docs/BACKEND-4-8-DELIVERY.md). These checks do not establish real agent-turn or cross-city compatibility.
+
+Still to validate/build: clean Windows installation, real microphone capture, real IDE/agent auto-install and event compatibility, real 5–8-device operation, richer local semantic matching, owner management UI, release signing, and detailed companion polish. The native IDE-window adapter is reserved for the teammate under [docs/GEMINI-HANDOFF.md](docs/GEMINI-HANDOFF.md); artwork is reserved for the artist. Logical IDE connection does not yet attach the companion to a native editor window.
+
+Architecture and implementation decisions are in [docs/architecture.md](docs/architecture.md). The product's target behavior is in [cobble-full-build-spec.md](cobble-full-build-spec.md).
+
+Current build evidence and installer checksum are in [docs/RELEASE-0.4.2.md](docs/RELEASE-0.4.2.md). The [0.4.0 manual walkthrough](docs/RELEASE-0.4.0.md) remains useful for unchanged core workflows; older reports are historical.
+
+## Daemon watchdog and recovery
+
+Run `cobble team daemon install --data PATH` to opt in to automatic daemon startup after a restart or sleep. Windows installs a per-user Scheduled Task for logon, wake events, and every ten minutes. macOS installs a launchd agent that runs at login and every ten minutes. Linux uses a systemd user timer when available, otherwise a marked crontab block for reboot and every ten minutes. These invoke `team daemon ensure`, which starts the daemon only when its heartbeat is stale or its process is gone. No other command installs the watchdog.
+
+Preview changes with `cobble team daemon install --dry-run --data PATH`. Remove them with `cobble team daemon uninstall --data PATH` (also supports `--dry-run`). Use the same data path for installation, status, and removal.
+
+While runs are active, the daemon holds a temporary keep-awake request using Windows SetThreadExecutionState, macOS `caffeinate`, or Linux `systemd-inhibit` when available. It releases the request when idle or stopped; power settings are unchanged. The daemon restores interrupted automation with its saved options. A user stop, including Ctrl+C in CLI pilot/autopilot, clears the saved automation and is never undone by recovery. `team daemon status` includes the latest recovery from the last seven days.
+
+The daemon watchdog `ensure` respects a user daemon stop until an explicit start (including a desktop background toggle or `--detach`). The watchdog command uses the Node CLI, so install it from the CLI; packaged-app installation is a known limitation.

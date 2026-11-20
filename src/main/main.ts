@@ -1,0 +1,1566 @@
+import {
+  desktopDataPath,
+  desktopRestartArgs,
+  desktopDaemonArgs,
+} from "./desktop-lifecycle";
+import { TeamDaemon } from "../core/team/daemon";
+import { launchDaemon } from "../core/team/daemon-launch";
+import { validRetryAfter } from "../core/team/budgets";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  dialog,
+  Tray,
+  Menu,
+  nativeImage,
+  screen,
+  safeStorage,
+  session,
+  clipboard,
+  Notification,
+} from "electron";
+import { dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { CobbleService } from "../core/service";
+import {
+  CompanionDrag,
+  CompanionMachine,
+  clampCompanionBounds,
+} from "./companion";
+import { transcribe } from "./voice";
+import { connectIde, prepareIde } from "./integration";
+import { IdeDiscovery, discoverIdes } from "./ide-discovery";
+import { readFile, writeFile, rm } from "node:fs/promises";
+import type { ExtendedAction as Action, Tab, AppState } from "../shared/types";
+import { installAgentHooks } from "../core/agents";
+import { spawn } from "node:child_process";
+import { runRelay } from "../internet/cli";
+import { diagnoseIntegrations } from "./integration-diagnostics";
+let service: CobbleService;
+let main: BrowserWindow;
+let companion: BrowserWindow;
+let chatWindow: BrowserWindow | null = null;
+let chatWindowMinimized = false;
+let savedChatBounds = { width: 380, height: 520, x: 0, y: 0 };
+let tray: Tray;
+let quitting = false;
+let shutdownComplete = false;
+let idleTimer: ReturnType<typeof setInterval> | undefined;
+let ideTimer: ReturnType<typeof setInterval> | undefined;
+let ideDiscovery: IdeDiscovery | undefined;
+const voiceShutdown = new AbortController();
+const ideShutdown = new AbortController();
+const transcriptions = new Set<Promise<string>>();
+const machine = new CompanionMachine();
+const companionDrag = new CompanionDrag();
+let companionAnchor = { x: 0, y: 0 };
+const devUrl = process.env.COBBLE_RENDERER_URL;
+const companionSmoke = process.env.COBBLE_COMPANION_SMOKE_TEST === "1";
+const shutdownSmoke = process.env.COBBLE_SHUTDOWN_SMOKE_TEST === "1";
+const smoke =
+  process.env.COBBLE_SMOKE_TEST === "1" || companionSmoke || shutdownSmoke;
+if (smoke)
+  app.setPath(
+    "userData",
+    join(
+      process.cwd(),
+      ".cobble",
+      `smoke-profile-${process.pid}-${Date.now()}`,
+    ),
+  );
+/**
+ * The database the app opens: `--data PATH` / `--data=PATH`, else the
+ * COBBLE_DATA environment variable, else the profile's own cobble.sqlite.
+ * This lets the app open the same data folder as the `cobble` CLI.
+ */
+function dataPath(): string {
+  if (smoke) return join(app.getPath("userData"), "cobble.sqlite");
+  const argv = process.argv;
+  const at = argv.indexOf("--data");
+  const flag =
+    at >= 0
+      ? argv[at + 1]
+      : argv.find((arg) => arg.startsWith("--data="))?.slice(7);
+  const chosen = (flag || process.env.COBBLE_DATA || "").trim();
+  return chosen
+    ? resolve(chosen)
+    : join(app.getPath("userData"), "cobble.sqlite");
+}
+// The smoke profile names its database explicitly, as a restart or the
+// daemon would, so both always open the same file.
+if (smoke && !process.argv.includes("--data"))
+  process.argv.push("--data", dataPath());
+if (process.argv.includes("--relay-server")) {
+  void app
+    .whenReady()
+    .then(runRelay)
+    .catch((error) => {
+      console.error(error.message);
+      app.exit(1);
+    });
+} else if (process.argv.includes("--team-daemon")) {
+  void app
+    .whenReady()
+    .then(async () => {
+      const daemonService = new CobbleService(
+        dataPath(),
+        {
+          protect: (value) => {
+            if (!safeStorage.isEncryptionAvailable())
+              throw new Error("OS credential encryption is unavailable");
+            return safeStorage.encryptString(value).toString("base64");
+          },
+          unprotect: (value) =>
+            safeStorage.decryptString(Buffer.from(value, "base64")),
+        },
+      );
+      try {
+        daemonService.gitBinary = app.isPackaged
+          ? join(process.resourcesPath, "git", "cmd", "git.exe")
+          : "git";
+        const daemon = new TeamDaemon({
+          orchestrator: daemonService.agentTeam,
+          teamStore: daemonService.teamStore,
+          log: console.log,
+          restore: daemonService.automationRestorer(),
+        });
+        await daemon.start();
+        await daemon.done;
+      } finally {
+        await daemonService.close();
+      }
+      app.exit(0);
+    })
+    .catch((error) => {
+      console.error(error);
+      app.exit(1);
+    });
+} else if (!app.requestSingleInstanceLock()) app.quit();
+else {
+  app.on("second-instance", () => {
+    if (quitting) return;
+    if (main?.isMinimized()) main.restore();
+    main?.show();
+    main?.focus();
+  });
+  void app.whenReady().then(async () => {
+    try {
+      const protect = (value: string) => {
+        if (!safeStorage.isEncryptionAvailable())
+          throw new Error("OS credential encryption is unavailable");
+        return safeStorage.encryptString(value).toString("base64");
+      };
+      const unprotect = (value: string) =>
+        safeStorage.decryptString(Buffer.from(value, "base64"));
+      const dbPath = dataPath();
+      service = new CobbleService(
+        dbPath,
+        { protect, unprotect },
+        {
+          launchTeamDaemon: () => {
+            const env: NodeJS.ProcessEnv = {
+              ...process.env,
+              COBBLE_DATA: dbPath,
+            };
+            delete env.ELECTRON_RUN_AS_NODE;
+            launchDaemon(dbPath, {
+              execPath: process.execPath,
+              args: desktopDaemonArgs(app.isPackaged, app.getAppPath(), dbPath),
+              cwd: dirname(dbPath),
+              env,
+            });
+          },
+          reviewWorker: {
+            file: app.isPackaged
+              ? join(process.resourcesPath, "review", "review-worker.cjs")
+              : join(app.getAppPath(), "dist", "review-worker.cjs"),
+            guard:
+              process.platform === "win32"
+                ? app.isPackaged
+                  ? join(process.resourcesPath, "review", "review-guard.exe")
+                  : join(app.getAppPath(), "dist", "review-guard.exe")
+                : undefined,
+          },
+        },
+      );
+      service.gitBinary = app.isPackaged
+        ? join(process.resourcesPath, "git", "cmd", "git.exe")
+        : "git";
+      await service.start();
+      let lastBootstrap = "";
+      const syncPairing = async () => {
+        if (quitting) return;
+        const workspace = service.activeTeam()?.workspace ?? "";
+        const data = JSON.stringify({
+          port: service.bridge.port,
+          token: service.bridge.token,
+          workspace,
+        });
+        if (data === lastBootstrap) return;
+        await writeFile(
+          join(app.getPath("userData"), "ide-pairing.json"),
+          data,
+          { mode: 0o600 },
+        );
+        lastBootstrap = data;
+      };
+      await syncPairing();
+      const options = {
+        preload: join(__dirname, "preload.cjs"),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        backgroundThrottling: !smoke,
+        offscreen: smoke,
+      };
+      main = new BrowserWindow({
+        width: 1180,
+        height: 820,
+        minWidth: 850,
+        minHeight: 620,
+        title: "Cobble",
+        backgroundColor: "#f6f7f2",
+        show: !smoke,
+        webPreferences: options,
+      });
+      companion = new BrowserWindow({
+        width: 160,
+        height: 110,
+        frame: false,
+        transparent: true,
+        resizable: false,
+        skipTaskbar: true,
+        alwaysOnTop: true,
+        show: false,
+        webPreferences: { ...options, backgroundThrottling: false },
+      });
+      companion.setIgnoreMouseEvents(true, { forward: true });
+      const endCompanionDrag = () => {
+        if (!companionDrag.active) return;
+        companionDrag.stop();
+        machine.dragEnd();
+        const bounds = companion.getBounds();
+        const display = screen.getDisplayMatching(bounds);
+        const clampedBounds = clampCompanionBounds(bounds, display.workArea);
+        if (bounds.x !== clampedBounds.x || bounds.y !== clampedBounds.y) {
+          companion.setBounds(clampedBounds);
+        }
+        const collapsed = {
+          x: clampedBounds.x + clampedBounds.width - 160,
+          y: clampedBounds.y + clampedBounds.height - 110,
+          width: 160,
+          height: 110,
+        };
+        companionAnchor = clampCompanionBounds(collapsed, display.workArea);
+        service.store.set("companionPosition", [
+          companionAnchor.x,
+          companionAnchor.y,
+        ]);
+        companion.webContents.send("cobble:pose", machine.mode);
+      };
+      companion.on("blur", endCompanionDrag);
+      companion.on("hide", endCompanionDrag);
+      companion.webContents.on("render-process-gone", () => {
+        companionDrag.stop();
+        machine.dragEnd();
+      });
+      const renderer = pathToFileURL(
+        join(__dirname, "../renderer/index.html"),
+      ).href;
+      for (const win of [main, companion]) {
+        win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+        win.webContents.on("will-navigate", (event) => event.preventDefault());
+        win.webContents.on("will-attach-webview", (event) =>
+          event.preventDefault(),
+        );
+      }
+      session.defaultSession.setPermissionRequestHandler(
+        (webContents, permission, callback, details) =>
+          callback(
+            permission === "media" &&
+              [
+                main.webContents,
+                companion.webContents,
+                ...(chatWindow && !chatWindow.isDestroyed()
+                  ? [chatWindow.webContents]
+                  : []),
+              ].includes(webContents) &&
+              "mediaTypes" in details &&
+              !!details.mediaTypes?.includes("audio") &&
+              !details.mediaTypes.includes("video"),
+          ),
+      );
+      const allowed = (event: Electron.IpcMainInvokeEvent) => {
+        if (
+          ![
+            main.webContents,
+            companion.webContents,
+            ...(chatWindow && !chatWindow.isDestroyed()
+              ? [chatWindow.webContents]
+              : []),
+          ].includes(event.sender) ||
+          event.senderFrame !== event.sender.mainFrame
+        )
+          throw new Error("Untrusted app frame");
+        const url = event.senderFrame?.url ?? "";
+        if (devUrl ? !url.startsWith(`${devUrl}/`) : !url.startsWith(renderer))
+          throw new Error("Untrusted app origin");
+      };
+      const handle = (
+        name: string,
+        callback: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => any,
+      ) =>
+        ipcMain.handle(`cobble:${name}`, (event, ...args) => {
+          allowed(event);
+          if (quitting) throw new Error("Cobble is closing");
+          return callback(event, ...args);
+        });
+      handle("state", () => service.state());
+      handle("integration-diagnostics", async () =>
+        diagnoseIntegrations(
+          await discoverIdes({ signal: ideShutdown.signal }),
+          service.activeTeam()?.workspace,
+          service.bridge.current,
+        ),
+      );
+      handle("create-backup", async () => {
+        const selection = await dialog.showSaveDialog(main, {
+          title: "Save encrypted backup (this Windows account only)",
+          defaultPath: `Cobble-${new Date().toISOString().slice(0, 10)}.cobblebackup`,
+          filters: [
+            { name: "Encrypted Cobble backup", extensions: ["cobblebackup"] },
+          ],
+        });
+        if (selection.canceled || !selection.filePath) return null;
+        return service.createBackup(selection.filePath);
+      });
+      handle("restore-backup-copy", async () => {
+        const source = await dialog.showOpenDialog(main, {
+          title: "Choose an encrypted backup from this Windows account",
+          properties: ["openFile"],
+          filters: [
+            { name: "Encrypted Cobble backup", extensions: ["cobblebackup"] },
+          ],
+        });
+        if (source.canceled || !source.filePaths[0]) return null;
+        const target = await dialog.showSaveDialog(main, {
+          title:
+            "Save recovered offline database (current data stays unchanged)",
+          defaultPath: "Cobble-recovered.sqlite",
+          filters: [{ name: "Recovered database", extensions: ["sqlite"] }],
+        });
+        if (target.canceled || !target.filePath) return null;
+        return service.restoreBackupCopy(source.filePaths[0], target.filePath);
+      });
+      handle("maintenance", (_, days = 30) => service.maintenance(days));
+      handle("prune-local-history", async (_, days: number) => {
+        const summary = service.maintenance(days);
+        const choice = await dialog.showMessageBox(main, {
+          type: "warning",
+          title: "Remove old resolved revert snapshots?",
+          message: `Remove ${summary.eligibleBatches} resolved snapshots older than ${days} days?`,
+          detail:
+            "These changes will no longer be revertible through Cobble. Messages, plan history, unresolved changes, votes and queued work remain. Take an encrypted backup first if you need these snapshots.",
+          buttons: ["Cancel", "Remove resolved snapshots"],
+          defaultId: 0,
+          cancelId: 0,
+        });
+        return choice.response === 1 ? service.pruneLocalHistory(days) : null;
+      });
+      const chosenFolders = new Set<string>();
+      handle("action", async (_, action: Action) => {
+        if (
+          action?.type === "createTeam" &&
+          action.workspace &&
+          !chosenFolders.has(action.workspace)
+        )
+          throw new Error("Choose the workspace using the folder picker");
+        await service.action(action);
+        await service.monitor();
+        return service.state();
+      });
+      const choose = async () => {
+        const result = await dialog.showOpenDialog(main, {
+          properties: ["openDirectory"],
+          title: "Choose your project folder (source code, not the editor app)",
+        });
+        const path = result.canceled ? null : result.filePaths[0];
+        if (path) chosenFolders.add(path);
+        return path;
+      };
+      handle("choose", choose);
+      handle("bind", async () => {
+        const path = await choose();
+        if (path) await service.bindWorkspace(path);
+      });
+      handle("pairing", () => {
+        const workspace = service.activeTeam()?.workspace;
+        if (!workspace) throw new Error("Choose a workspace first");
+        return {
+          port: service.bridge.port,
+          token: service.bridge.token,
+          workspace,
+        };
+      });
+      handle("copy-pairing", () => {
+        const workspace = service.activeTeam()?.workspace;
+        if (!workspace) throw new Error("Choose a workspace first");
+        clipboard.writeText(
+          JSON.stringify({
+            port: service.bridge.port,
+            token: service.bridge.token,
+            workspace,
+          }),
+        );
+      });
+      const vsix = app.isPackaged
+        ? join(process.resourcesPath, "integrations", "cobble-workspace.vsix")
+        : join(
+            app.getAppPath(),
+            "resources",
+            "integrations",
+            "cobble-workspace.vsix",
+          );
+      ideDiscovery = new IdeDiscovery(
+        () => discoverIdes({ signal: ideShutdown.signal }),
+        async (editor) => {
+          await syncPairing();
+          await prepareIde(editor, vsix, ideShutdown.signal);
+        },
+        () => !smoke && !quitting && !!service.activeTeam()?.workspace,
+      );
+      handle("detect-ides", () => ideDiscovery!.refresh());
+      handle("connect-ide", async (_, id?: string) => {
+        if (id !== undefined && typeof id !== "string")
+          throw new Error("Invalid editor selection");
+        const workspace = service.activeTeam()?.workspace ?? "";
+        if (!workspace) throw new Error("Choose your project folder first");
+        await ideDiscovery!.refresh();
+        if (quitting || service.activeTeam()?.workspace !== workspace)
+          throw new Error("The project changed. Select your editor again.");
+        const available = ideDiscovery!.list().filter((e) => e.integration);
+        if (!id && available.length === 1) id = available[0].id;
+        const editor = id ? ideDiscovery!.get(id) : undefined;
+        if (!editor)
+          throw new Error("Select an editor from Detected apps first");
+        await syncPairing();
+        const name = await connectIde(
+          editor,
+          workspace,
+          vsix,
+          ideShutdown.signal,
+          available.find((e) => e.id === editor.id)?.prepared,
+        );
+        ideDiscovery!.markPrepared(editor.id);
+        return name;
+      });
+      if (!smoke) {
+        void ideDiscovery
+          .refresh()
+          .catch((e) => console.error("IDE discovery failed", e));
+        ideTimer = setInterval(() => {
+          void ideDiscovery
+            ?.refresh()
+            .catch((e) => console.error("IDE discovery failed", e));
+        }, 15_000);
+        ideTimer.unref();
+      }
+      handle("report", () => service.report());
+      handle("search-plan", (_, query: string) => service.searchPlan(query));
+      handle("install-agent", async (_, agent: string, remove = false) => {
+        if (
+          !["claude", "cursor", "gemini"].includes(agent) ||
+          typeof remove !== "boolean"
+        )
+          throw new Error("Unsupported coding agent");
+        const workspace = service.activeTeam()?.workspace;
+        if (!workspace) throw new Error("Choose your workspace first");
+        const relay = app.isPackaged
+          ? join(process.resourcesPath, "integrations", "agent-relay.ps1")
+          : join(app.getAppPath(), "packaging", "agent-relay.ps1");
+        await installAgentHooks(
+          workspace,
+          agent as "claude" | "cursor" | "gemini",
+          relay,
+          join(app.getPath("userData"), "ide-pairing.json"),
+          remove,
+        );
+      });
+      // Agent Team (docs/AGENT-TEAM-PLAN.md). Main validates every field.
+      const text = (value: unknown, max = 200) => {
+        if (typeof value !== "string" || value.length > max)
+          throw new Error("Invalid team request");
+        return value;
+      };
+      handle("team-set-max-cost", (_, runId: unknown, usd: unknown) => {
+        if (usd !== null && (typeof usd !== "number" || !Number.isFinite(usd)))
+          throw new Error("Maximum spend must be a finite number or null");
+        return service.setTeamMaxCost(text(runId, 64), usd);
+      });
+      const isPlainTeamRequest = (value: unknown) =>
+        value !== null &&
+        typeof value === "object" &&
+        (Object.getPrototypeOf(value) === Object.prototype ||
+          Object.getPrototypeOf(value) === null);
+      handle("team-usage-limits", () => service.teamUsageLimits());
+      handle("team-build-plan", () => service.teamBuildPlan());
+      handle("team-usage-stop-at", (_, percent: number) =>
+        service.setTeamUsageStopAt(percent),
+      );
+      handle(
+        "agent-usage-budget",
+        (
+          _,
+          agent: string,
+          cfg: Parameters<CobbleService["setAgentUsageBudget"]>[1],
+        ) => service.setAgentUsageBudget(agent, cfg),
+      );
+      handle("team-members", () => service.teamMembers());
+      handle(
+        "team-member-add",
+        (_, input: Parameters<CobbleService["addTeamMember"]>[0]) => {
+          if (!isPlainTeamRequest(input))
+            throw new Error("Invalid team request");
+          return service.addTeamMember(input);
+        },
+      );
+      handle(
+        "team-member-update",
+        (
+          _,
+          name: unknown,
+          patch: Parameters<CobbleService["updateTeamMember"]>[1],
+        ) => {
+          if (!isPlainTeamRequest(patch))
+            throw new Error("Invalid team request");
+          return service.updateTeamMember(text(name, 40), patch);
+        },
+      );
+      handle("team-member-remove", (_, name: unknown) =>
+        service.removeTeamMember(text(name, 40)),
+      );
+      handle("team-roles", () => service.teamRoles());
+      handle("team-set-role", (_, role: unknown, agent: unknown) =>
+        service.setTeamRole(
+          text(role, 32),
+          agent === null ? null : text(agent, 32),
+        ),
+      );
+      handle("team-detect-agents", () => service.detectTeamAgents());
+      handle("team-test-agent", (_, agent: unknown) =>
+        service.testTeamAgent(text(agent, 32)),
+      );
+      const teamRunArguments = (
+        budget: unknown,
+        policy: unknown,
+        options: unknown,
+      ) =>
+        [
+          budget && typeof budget === "object" ? (budget as object) : undefined,
+          policy && typeof policy === "object" ? (policy as object) : undefined,
+          options && typeof options === "object"
+            ? {
+                ...((options as { retryAfterMinutes?: unknown })
+                  .retryAfterMinutes === undefined
+                  ? {}
+                  : {
+                      retryAfterMinutes: validRetryAfter(
+                        (options as { retryAfterMinutes?: unknown })
+                          .retryAfterMinutes,
+                      ),
+                    }),
+                checkCommand:
+                  (options as { checkCommand?: unknown }).checkCommand ===
+                  undefined
+                    ? undefined
+                    : text(
+                        (options as { checkCommand?: unknown }).checkCommand,
+                        500,
+                      ),
+                ...((options as { shareDependencies?: unknown })
+                  .shareDependencies === true
+                  ? { shareDependencies: true }
+                  : {}),
+                ...((options as { baseRef?: unknown }).baseRef === undefined
+                  ? {}
+                  : {
+                      baseRef: text(
+                        (options as { baseRef?: unknown }).baseRef,
+                        200,
+                      ),
+                    }),
+              }
+            : undefined,
+        ] as const;
+      handle(
+        "team-start-run",
+        (
+          _,
+          goal: unknown,
+          budget: unknown,
+          policy: unknown,
+          options: unknown,
+        ) =>
+          service.startTeamRun(
+            text(goal, 4_000),
+            ...teamRunArguments(budget, policy, options),
+          ),
+      );
+      handle("team-control-confirm", (_, id: unknown, yes: unknown) => {
+        if (typeof yes !== "boolean")
+          throw new Error("Confirmation must be a boolean");
+        return service.confirmTeamControl(text(id, 100), yes);
+      });
+      handle("team-proposal-add", (_, id: unknown) =>
+        service.addTeamProposalToBacklog(text(id, 100)),
+      );
+      handle("team-proposal-start-item", (_, id: unknown, item: unknown) =>
+        service.startTeamProposalItem(text(id, 100), text(item, 4000)),
+      );
+      handle("team-app-hub", () => service.teamAppHub());
+      handle("team-app-hub-action", async (_, action, answer) => {
+        await service.teamAppHubAction(action, answer, () => {
+          app.relaunch({
+            args: desktopRestartArgs(process.argv.slice(1), dbPath),
+          });
+          app.quit();
+        });
+      });
+      handle("team-project-chat", () => service.teamProjectChat());
+      handle(
+        "team-proposal-start",
+        (
+          _,
+          messageId: unknown,
+          goal: unknown,
+          budget: unknown,
+          policy: unknown,
+          options: unknown,
+        ) =>
+          service.startTeamProposal(
+            text(messageId, 100),
+            goal === undefined ? undefined : text(goal, 4_000),
+            ...teamRunArguments(budget, policy, options),
+          ),
+      );
+      const roadmapOptions = (value: unknown) => {
+        if (
+          !value ||
+          typeof value !== "object" ||
+          Array.isArray(value) ||
+          Object.keys(value).some(
+            (key) => !["goal", "items", "backlogPath"].includes(key),
+          )
+        )
+          throw new Error("Invalid roadmap options");
+        const options = value as Record<string, unknown>;
+        const goal = text(options.goal, 2000);
+        if (!goal.trim())
+          throw new Error("The goal must be 1 to 2000 characters");
+        return {
+          goal,
+          items: options.items,
+          backlogPath:
+            options.backlogPath === undefined
+              ? undefined
+              : text(options.backlogPath, 500),
+        };
+      };
+      handle("team-plan-roadmap", (_, value: unknown) => {
+        const { goal, items, backlogPath } = roadmapOptions(value);
+        if (
+          items !== undefined &&
+          (typeof items !== "number" ||
+            !Number.isInteger(items) ||
+            items < 1 ||
+            items > 15)
+        )
+          throw new Error("--items must be a whole number from 1 to 15");
+        return service.planRoadmap(goal, { items, backlogPath });
+      });
+      handle("team-add-roadmap", (_, value: unknown) => {
+        const { goal, items, backlogPath } = roadmapOptions(value);
+        if (!Array.isArray(items) || items.length < 1 || items.length > 15)
+          throw new Error("Roadmap must contain 1 to 15 items");
+        const lines = items.map((item) => text(item, 600));
+        return service.addRoadmap(goal, lines, backlogPath);
+      });
+      handle("team-start-autopilot", (_, value: unknown) => {
+        const record = (input: unknown, allowed: readonly string[]) => {
+          if (
+            !input ||
+            typeof input !== "object" ||
+            Array.isArray(input) ||
+            Object.keys(input).some((key) => !allowed.includes(key))
+          )
+            throw new Error("Invalid Autopilot options");
+          return input as Record<string, unknown>;
+        };
+        const options = record(value === undefined ? {} : value, [
+          "pilot",
+          "parallel",
+          "detach",
+          "backlogPath",
+          "maxRuns",
+          "checkCommand",
+          "shareDependencies",
+          "budget",
+        ]);
+        const {
+          pilot,
+          parallel,
+          detach,
+          backlogPath,
+          maxRuns,
+          checkCommand,
+          shareDependencies,
+          budget,
+        } = options;
+        if (
+          parallel !== undefined &&
+          (typeof parallel !== "number" ||
+            !Number.isInteger(parallel) ||
+            parallel < 1 ||
+            parallel > 4)
+        )
+          throw new Error("Items at a time must be a whole number from 1 to 4");
+        if (pilot !== undefined && typeof pilot !== "boolean")
+          throw new Error("Pilot must be a boolean");
+        if (detach !== undefined && typeof detach !== "boolean")
+          throw new Error(
+            "Keep running when Cobble is closed must be a boolean",
+          );
+        const positiveInteger = (input: unknown) => {
+          if (
+            typeof input !== "number" ||
+            !Number.isSafeInteger(input) ||
+            input < 1
+          )
+            throw new Error("Autopilot limits must be positive integers");
+          return input;
+        };
+        if (
+          shareDependencies !== undefined &&
+          typeof shareDependencies !== "boolean"
+        )
+          throw new Error("Share node_modules must be a boolean");
+        const positiveCost = (input: unknown) => {
+          if (
+            typeof input !== "number" ||
+            !Number.isFinite(input) ||
+            input <= 0
+          )
+            throw new Error("Maximum spend must be a positive finite number");
+          return input;
+        };
+        const limits =
+          budget === undefined
+            ? undefined
+            : Object.fromEntries(
+                Object.entries(
+                  record(budget, [
+                    "maxTasks",
+                    "maxPlannerTurns",
+                    "maxParallel",
+                    "maxAttempts",
+                    "wallClockMs",
+                    "taskTimeoutMs",
+                    "maxCostUsd",
+                  ]),
+                ).map(([key, limit]) => [
+                  key,
+                  key === "maxCostUsd"
+                    ? positiveCost(limit)
+                    : positiveInteger(limit),
+                ]),
+              );
+        return service.startAutopilot({
+          pilot: pilot as boolean | undefined,
+          parallel: parallel as number | undefined,
+          detach: true,
+          backlogPath:
+            backlogPath === undefined ? undefined : text(backlogPath, 500),
+          maxRuns: maxRuns === undefined ? undefined : positiveInteger(maxRuns),
+          checkCommand:
+            checkCommand === undefined ? undefined : text(checkCommand, 500),
+          shareDependencies,
+          budget: limits,
+        });
+      });
+      handle("team-stop-autopilot", () => service.stopAutopilot());
+      handle("team-daemon-status", () => service.teamDaemonStatus());
+      handle("team-autopilot-status", () => service.autopilotStatus());
+      handle("team-runs", () => service.teamRuns());
+      handle("team-run", (_, runId: unknown) =>
+        service.teamRun(text(runId, 64)),
+      );
+      handle("agent-room", () => service.agentRoom());
+      handle("agent-room-lend", (_, agents: unknown) =>
+        service.setLentAgents(agents),
+      );
+      handle(
+        "agent-room-teammate-role",
+        (_, role: unknown, memberId: unknown, agent: unknown) => {
+          service.setTeammateRole(
+            text(role, 32),
+            memberId === null ? null : text(memberId, 100),
+            agent === undefined || agent === null ? undefined : text(agent, 32),
+          );
+          return service.agentRoom();
+        },
+      );
+      handle("agent-room-chat", (_, runId: unknown) =>
+        service.agentRoomChat(text(runId, 100)),
+      );
+      handle("agent-room-say", (_, runId: unknown, message: unknown) =>
+        service.sayInAgentRoom(text(runId, 100), text(message, 4_000)),
+      );
+      handle("team-chat", (_, runId: unknown) =>
+        service.teamChat(text(runId, 64)),
+      );
+      handle("team-chat-send", (_, runId: unknown, message: unknown) =>
+        service.sendTeamChat(
+          runId === null ? null : text(runId, 64),
+          text(message, 4_000),
+        ),
+      );
+      handle(
+        "team-command",
+        (
+          _,
+          runId: unknown,
+          command: unknown,
+          taskId: unknown,
+          note: unknown,
+          answers: unknown,
+        ) => {
+          if (
+            answers !== undefined &&
+            answers !== null &&
+            (!Array.isArray(answers) ||
+              answers.length > 12 ||
+              answers.some((a) => typeof a !== "string" || a.length > 1_000))
+          )
+            throw new Error("Invalid answers");
+          const allowedCommands = [
+            "pause",
+            "resume",
+            "stop",
+            "cleanup",
+            "done",
+            "approve",
+            "skip",
+            "deny",
+          ] as const;
+          const name = text(command, 16) as (typeof allowedCommands)[number];
+          if (!allowedCommands.includes(name))
+            throw new Error("Unknown team command");
+          return service.teamRunCommand(
+            text(runId, 64),
+            name,
+            taskId === undefined || taskId === null
+              ? undefined
+              : text(taskId, 32),
+            note === undefined || note === null ? undefined : text(note, 1_000),
+            Array.isArray(answers) ? answers : undefined,
+          );
+        },
+      );
+      handle("team-backup-agents", () => service.teamBackupAgents());
+      handle("team-set-backup-agent", (_, role: unknown, agent: unknown) =>
+        service.setTeamBackupAgent(
+          text(role, 32),
+          agent === null ? null : text(agent, 32),
+        ),
+      );
+      handle("team-full-access", () => service.teamFullAccess());
+      handle("team-set-full-access", (_, roles: unknown) =>
+        service.setTeamFullAccess(roles),
+      );
+      handle("team-user-decisions", () => service.teamUserDecisions());
+      handle("team-session-brief", () => service.teamSessionBrief());
+      handle("save-team-session-brief", (_, input: unknown) =>
+        service.saveTeamSessionBrief(input),
+      );
+      handle("skip-team-session-brief", () => service.skipTeamSessionBrief());
+      handle("clear-team-session-brief", () => service.clearTeamSessionBrief());
+      handle("team-session-brief-defaults", () =>
+        service.sessionBriefDefaults(),
+      );
+      handle("team-forget-user-decisions", () =>
+        service.forgetTeamUserDecisions(),
+      );
+      handle("team-phone-notify", () => service.phoneNotify());
+      handle("team-set-phone-notify", (_, patch: unknown) =>
+        service.setPhoneNotify(
+          patch && typeof patch === "object"
+            ? (patch as {
+                enabled?: unknown;
+                server?: unknown;
+                regenerateTopic?: unknown;
+              })
+            : {},
+        ),
+      );
+      handle("team-test-phone-notify", () => service.testPhoneNotify());
+      handle("team-open-terminal", (_, runId: unknown, taskId: unknown) => {
+        // The folder comes from Cobble's own records, never from the renderer.
+        const folder = service.teamTaskFolder(
+          text(runId, 64),
+          taskId === undefined || taskId === null
+            ? undefined
+            : text(taskId, 32),
+        );
+        if (process.platform !== "win32")
+          throw new Error(
+            "Opening a terminal is only supported on Windows for now",
+          );
+        spawn(
+          "cmd.exe",
+          ["/d", "/c", "start", "", "powershell.exe", "-NoExit"],
+          {
+            cwd: folder,
+            detached: true,
+            stdio: "ignore",
+            windowsHide: false,
+          },
+        ).unref();
+      });
+      handle("preview-revert", (_, id: string) => service.previewRevert(id));
+      handle("apply-revert", async (_, id: string, token: string) => {
+        const preview = await service.previewRevert(id);
+        const choice = await dialog.showMessageBox(main, {
+          type: "warning",
+          title: "Revert the reviewed saved changes?",
+          message: "Only the previewed local changes will be reverted.",
+          detail: preview.files.map((f) => f.path).join("\n"),
+          buttons: ["Cancel", "Revert reviewed changes"],
+          defaultId: 0,
+          cancelId: 0,
+        });
+        if (choice.response === 1) await service.applyRevert(id, token);
+      });
+      handle("integrate-main", async (_, id: string) => {
+        const proposal = service.collaboration.proposal(id);
+        const choice = await dialog.showMessageBox(main, {
+          type: "question",
+          title: "Integrate the approved change?",
+          message: proposal.title,
+          detail: `Source: ${proposal.sourceSha}\nMain before: ${proposal.baseSha}\n${proposal.votes.length}/${proposal.electorate.length} votes recorded. Cobble checks approval again before merging.`,
+          buttons: ["Cancel", "Integrate into main"],
+          defaultId: 0,
+          cancelId: 0,
+        });
+        if (choice.response === 1) await service.integrateMain(id);
+      });
+      handle("transcribe", async (_, audio: ArrayBuffer) => {
+        const job = transcribe(
+          audio,
+          app.isPackaged
+            ? join(process.resourcesPath, "voice")
+            : join(app.getAppPath(), "resources", "voice"),
+          voiceShutdown.signal,
+        );
+        transcriptions.add(job);
+        try {
+          return await job;
+        } finally {
+          transcriptions.delete(job);
+        }
+      });
+      handle("artwork", async () => {
+        const artwork: Record<string, string> = {};
+        for (const mode of ["normal", "idle", "dragging"]) {
+          try {
+            const data = await readFile(
+              join(app.getAppPath(), "assets", "companion", `${mode}.png`),
+            );
+            if (
+              data.length <= 2_000_000 &&
+              data
+                .subarray(0, 8)
+                .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+            )
+              artwork[mode] =
+                `data:image/png;base64,${data.toString("base64")}`;
+          } catch {
+            /* artist assets are optional */
+          }
+        }
+        return artwork;
+      });
+      handle("open", (_, tab: Tab = "Agents", voice = false) => {
+        if (
+          !["Agents", "Home", "Chats", "Teams", "Invites", "Profile"].includes(
+            tab,
+          ) ||
+          typeof voice !== "boolean"
+        )
+          throw new Error("Unknown navigation");
+        if (!smoke) {
+          main.show();
+          main.focus();
+        }
+        main.webContents.send("cobble:navigate", tab, voice && tab === "Chats");
+        machine.interact();
+      });
+
+      const getChatWindow = () => {
+        if (chatWindow && !chatWindow.isDestroyed()) return chatWindow;
+        const primaryDisplay = screen.getPrimaryDisplay();
+        const workArea = primaryDisplay.workArea;
+        const w = 380;
+        const h = 520;
+        const x = workArea.x + workArea.width - w - 24;
+        const y = workArea.y + workArea.height - h - 24;
+        const initial = clampCompanionBounds(
+          { x, y, width: w, height: h },
+          workArea,
+        );
+
+        chatWindow = new BrowserWindow({
+          width: initial.width,
+          height: initial.height,
+          x: initial.x,
+          y: initial.y,
+          frame: false,
+          transparent: true,
+          resizable: true,
+          minWidth: 320,
+          minHeight: 400,
+          skipTaskbar: false,
+          alwaysOnTop: true,
+          show: false,
+          webPreferences: {
+            ...options,
+            offscreen: false,
+            backgroundThrottling: false,
+          },
+        });
+
+        savedChatBounds = clampCompanionBounds(
+          chatWindow.getBounds(),
+          workArea,
+        );
+
+        chatWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+        chatWindow.webContents.on("will-navigate", (event) =>
+          event.preventDefault(),
+        );
+        chatWindow.webContents.on("will-attach-webview", (event) =>
+          event.preventDefault(),
+        );
+
+        const chatUrl = `${devUrl ?? renderer}?view=mini-chat`;
+        void chatWindow.loadURL(chatUrl);
+        chatWindow.webContents.on("did-finish-load", () => {
+          chatWindow?.webContents.send("cobble:chat-window-state", {
+            visible: chatWindow.isVisible(),
+            minimized: chatWindowMinimized,
+          });
+        });
+        let clampingChat = false;
+        const clampChatWindow = () => {
+          if (clampingChat || !chatWindow || chatWindow.isDestroyed()) return;
+          const b = chatWindow.getBounds();
+          const display = screen.getDisplayMatching(b);
+          const workArea = display.workArea;
+          if (chatWindowMinimized) {
+            const clampedPill = clampCompanionBounds(
+              { x: b.x, y: b.y, width: b.width, height: b.height },
+              workArea,
+            );
+            if (b.x !== clampedPill.x || b.y !== clampedPill.y) {
+              clampingChat = true;
+              try {
+                chatWindow.setBounds(clampedPill);
+              } finally {
+                clampingChat = false;
+              }
+            }
+          } else {
+            if (b.height >= 400 && b.width >= 320) {
+              const clamped = clampCompanionBounds(
+                { x: b.x, y: b.y, width: b.width, height: b.height },
+                workArea,
+              );
+              savedChatBounds = clamped;
+              if (b.x !== clamped.x || b.y !== clamped.y) {
+                clampingChat = true;
+                try {
+                  chatWindow.setBounds(clamped);
+                } finally {
+                  clampingChat = false;
+                }
+              }
+            }
+          }
+        };
+
+        chatWindow.on("move", clampChatWindow);
+        chatWindow.on("moved", clampChatWindow);
+        chatWindow.on("resize", () => {
+          if (!chatWindowMinimized && chatWindow && !chatWindow.isDestroyed()) {
+            const b = chatWindow.getBounds();
+            if (b.height >= 400 && b.width >= 320) {
+              const display = screen.getDisplayMatching(b);
+              savedChatBounds = clampCompanionBounds(
+                { x: b.x, y: b.y, width: b.width, height: b.height },
+                display.workArea,
+              );
+            }
+          }
+        });
+        chatWindow.on("closed", () => {
+          chatWindow = null;
+          chatWindowMinimized = false;
+        });
+
+        chatWindow.on("close", (event) => {
+          if (!quitting && !shutdownComplete) {
+            event.preventDefault();
+            chatWindow?.hide();
+          }
+        });
+
+        return chatWindow;
+      };
+
+      handle("chat-window", (_, command: string) => {
+        if (
+          ![
+            "show",
+            "hide",
+            "toggle",
+            "minimize",
+            "restore",
+            "redirect",
+            "status",
+          ].includes(command)
+        )
+          throw new Error("Unknown chat window command");
+        if (
+          (!chatWindow || chatWindow.isDestroyed()) &&
+          ["status", "hide", "redirect"].includes(command)
+        ) {
+          if (command === "redirect") {
+            if (!smoke) {
+              main.show();
+              main.focus();
+            }
+            main.webContents.send("cobble:navigate", "Chats", false);
+          }
+          return { visible: false, minimized: false };
+        }
+        const broadcastChatState = (visible: boolean, minimized: boolean) => {
+          if (main && !main.isDestroyed()) {
+            main.webContents.send("cobble:chat-window-state", {
+              visible,
+              minimized,
+            });
+          }
+          if (chatWindow && !chatWindow.isDestroyed()) {
+            chatWindow.webContents.send("cobble:chat-window-state", {
+              visible,
+              minimized,
+            });
+          }
+        };
+        const restoreChatBounds = (targetWin: BrowserWindow) => {
+          targetWin.setMinimumSize(320, 400);
+          targetWin.setResizable(true);
+          const targetW = Math.max(380, savedChatBounds.width);
+          const targetH = Math.max(520, savedChatBounds.height);
+          const rawBounds = {
+            width: targetW,
+            height: targetH,
+            x: savedChatBounds.x,
+            y: savedChatBounds.y,
+          };
+          const display = screen.getDisplayMatching(rawBounds);
+          const restoreB = clampCompanionBounds(rawBounds, display.workArea);
+          savedChatBounds = restoreB;
+          targetWin.setBounds(restoreB);
+          chatWindowMinimized = false;
+          targetWin.webContents.send("cobble:chat-window-state", {
+            minimized: false,
+          });
+        };
+        const win = getChatWindow();
+        if (command === "show") {
+          if (chatWindowMinimized) {
+            restoreChatBounds(win);
+          } else {
+            const curr = win.getBounds();
+            const display = screen.getDisplayMatching(curr);
+            const clamped = clampCompanionBounds(curr, display.workArea);
+            if (curr.x !== clamped.x || curr.y !== clamped.y) {
+              win.setBounds(clamped);
+            }
+          }
+          win.setAlwaysOnTop(true, "floating");
+          win.show();
+          win.focus();
+          broadcastChatState(true, false);
+          return { visible: true, minimized: false };
+        } else if (command === "hide") {
+          win.hide();
+          broadcastChatState(false, chatWindowMinimized);
+          return { visible: false, minimized: chatWindowMinimized };
+        } else if (command === "toggle") {
+          if (win.isVisible()) {
+            win.hide();
+            return { visible: false, minimized: chatWindowMinimized };
+          } else {
+            if (chatWindowMinimized) {
+              restoreChatBounds(win);
+            } else {
+              const curr = win.getBounds();
+              const display = screen.getDisplayMatching(curr);
+              const clamped = clampCompanionBounds(curr, display.workArea);
+              if (curr.x !== clamped.x || curr.y !== clamped.y) {
+                win.setBounds(clamped);
+              }
+            }
+            win.setAlwaysOnTop(true, "floating");
+            win.show();
+            win.focus();
+            broadcastChatState(true, false);
+            return { visible: true, minimized: false };
+          }
+        } else if (command === "minimize") {
+          if (!chatWindowMinimized) {
+            const curr = win.getBounds();
+            if (curr.height >= 400 && curr.width >= 320) {
+              const display = screen.getDisplayMatching(curr);
+              savedChatBounds = clampCompanionBounds(curr, display.workArea);
+            }
+            chatWindowMinimized = true;
+            const workArea = screen.getDisplayMatching(curr).workArea;
+            win.setMinimumSize(0, 0);
+            win.setResizable(false);
+            const pillBounds = clampCompanionBounds(
+              {
+                x: workArea.x + workArea.width - 290,
+                y: workArea.y + workArea.height - 54,
+                width: 270,
+                height: 44,
+              },
+              workArea,
+            );
+            win.setBounds(pillBounds);
+            win.webContents.send("cobble:chat-window-state", {
+              minimized: true,
+            });
+          }
+          win.setAlwaysOnTop(true, "floating");
+          win.show();
+          broadcastChatState(true, true);
+          return { visible: true, minimized: true };
+        } else if (command === "restore") {
+          if (chatWindowMinimized) {
+            restoreChatBounds(win);
+          }
+          win.setAlwaysOnTop(true, "floating");
+          win.show();
+          win.focus();
+          broadcastChatState(true, false);
+          return { visible: true, minimized: false };
+        } else if (command === "redirect") {
+          if (!smoke) {
+            main.show();
+            main.focus();
+          }
+          main.webContents.send("cobble:navigate", "Chats", false);
+          win.hide();
+          broadcastChatState(false, chatWindowMinimized);
+          return { visible: false, minimized: chatWindowMinimized };
+        } else if (command === "status") {
+          return { visible: win.isVisible(), minimized: chatWindowMinimized };
+        }
+        throw new Error("Unknown chat window command");
+      });
+
+      handle(
+        "companion",
+        (_, command: string, point?: { x: number; y: number }) => {
+          // Renderer hit points are local CSS coordinates, never screen deltas.
+          // Convert page zoom to the DIP coordinates used by Electron windows.
+          const zoom = companion.webContents.getZoomFactor();
+          const [width, height] = companion.getContentSize();
+          const grab =
+            point &&
+            Number.isFinite(point.x) &&
+            Number.isFinite(point.y) &&
+            point.x * zoom >= 0 &&
+            point.x * zoom <= width &&
+            point.y * zoom >= 0 &&
+            point.y * zoom <= height
+              ? { x: point.x * zoom, y: point.y * zoom }
+              : undefined;
+          if (command === "show") {
+            companion.showInactive();
+            machine.interact();
+          } else if (command === "hide") companion.hide();
+          else if (command === "interact") machine.interact();
+          else if (command === "pointer-on")
+            companion.setIgnoreMouseEvents(false);
+          else if (command === "pointer-off") {
+            if (machine.mode !== "dragging")
+              companion.setIgnoreMouseEvents(true, { forward: true });
+          } else if (command === "menu-open") {
+            endCompanionDrag();
+            const width = 380;
+            const height = Math.min(
+              380,
+              screen.getDisplayMatching(companion.getBounds()).workArea.height -
+                12,
+            );
+            const targetX = companionAnchor.x + 160 - width;
+            const targetY = companionAnchor.y + 110 - height;
+            const target = { x: targetX, y: targetY, width, height };
+            const clamped = clampCompanionBounds(
+              target,
+              screen.getDisplayMatching(target).workArea,
+            );
+            companion.setBounds({
+              x: clamped.x,
+              y: clamped.y,
+              width,
+              height,
+            });
+          } else if (command === "menu-close") {
+            endCompanionDrag();
+            const target = { ...companionAnchor, width: 160, height: 110 };
+            const clamped = clampCompanionBounds(
+              target,
+              screen.getDisplayMatching(target).workArea,
+            );
+            companionAnchor = clamped;
+            companion.setBounds({
+              x: companionAnchor.x,
+              y: companionAnchor.y,
+              width: 160,
+              height: 110,
+            });
+          } else if (command === "drag-start") {
+            companionDrag.start(
+              screen.getCursorScreenPoint(),
+              companion.getBounds(),
+              grab,
+            );
+            companion.setIgnoreMouseEvents(false);
+            machine.dragStart();
+          } else if (command === "drag-move" && machine.mode === "dragging") {
+            const next = companionDrag.move(
+              screen.getCursorScreenPoint(),
+              grab,
+            );
+            if (next) {
+              const display = screen.getDisplayMatching({
+                x: next.x,
+                y: next.y,
+                width: next.width ?? 160,
+                height: next.height ?? 110,
+              });
+              const clamped = clampCompanionBounds(
+                {
+                  x: next.x,
+                  y: next.y,
+                  width: next.width ?? 160,
+                  height: next.height ?? 110,
+                },
+                display.workArea,
+              );
+              companion.setBounds(clamped);
+            }
+          } else if (command === "drag-move") {
+            // Ignore late move messages after a release/cancel/blur.
+          } else if (command === "drag-end") {
+            endCompanionDrag();
+          } else throw new Error("Unknown companion action");
+          companion.webContents.send("cobble:pose", machine.mode);
+        },
+      );
+      const seenNotices = new Set(
+        service.state().notifications.map((n) => n.id),
+      );
+      service.on("change", (state: AppState) => {
+        if (quitting) return;
+        const fresh = state.notifications.filter((n) => !seenNotices.has(n.id));
+        for (const notice of fresh) seenNotices.add(notice.id);
+        if (!smoke && Notification.isSupported())
+          for (const notice of fresh.slice(0, 3))
+            new Notification({
+              title: notice.title,
+              body: notice.detail.slice(0, 240),
+            }).show();
+        void syncPairing().catch((error) =>
+          console.error("IDE pairing refresh failed", error),
+        );
+        for (const win of [
+          main,
+          companion,
+          ...(chatWindow && !chatWindow.isDestroyed() ? [chatWindow] : []),
+        ])
+          if (!win.isDestroyed()) win.webContents.send("cobble:changed", state);
+      });
+      service.on("diagnostic", (message) => console.error("[Cobble]", message));
+      service.on("team", (runId: string | null) => {
+        if (quitting) return;
+        for (const win of [
+          main,
+          companion,
+          ...(chatWindow && !chatWindow.isDestroyed() ? [chatWindow] : []),
+        ])
+          if (!win.isDestroyed()) win.webContents.send("cobble:team", runId);
+      });
+      service.on(
+        "team-attention",
+        (event: { runId: string; taskId?: string; message: string }) => {
+          if (quitting) return;
+          if (!smoke && Notification.isSupported())
+            new Notification({
+              title: "Agent team needs you",
+              body: event.message.slice(0, 240),
+            }).show();
+          for (const win of [main, companion])
+            if (!win.isDestroyed())
+              win.webContents.send("cobble:team-attention", event);
+        },
+      );
+      main.on("close", (event) => {
+        if (!shutdownComplete) {
+          event.preventDefault();
+          app.quit();
+        }
+      });
+      companion.on("close", (event) => {
+        if (!quitting) {
+          event.preventDefault();
+          companion.hide();
+        }
+      });
+      await main.loadURL(devUrl ?? renderer);
+      main.setTitle(`Cobble ${app.getVersion()}`);
+      await companion.loadURL(`${devUrl ?? renderer}?view=companion`);
+      const area = screen.getPrimaryDisplay().workArea;
+      const stored = service.store.setting<number[] | null>(
+        "companionPosition",
+        null,
+      );
+      const hasStoredPosition =
+        Array.isArray(stored) &&
+        stored.length === 2 &&
+        stored.every(Number.isFinite);
+      const restored = {
+        x: hasStoredPosition ? stored![0] : area.x + area.width - 200,
+        y: hasStoredPosition ? stored![1] : area.y + area.height - 180,
+        width: 160,
+        height: 110,
+      };
+      const initialBounds = clampCompanionBounds(
+        restored,
+        screen.getDisplayMatching(restored).workArea,
+      );
+      companionAnchor = { x: initialBounds.x, y: initialBounds.y };
+      companion.setBounds(initialBounds);
+      if (!smoke) companion.showInactive();
+      const pixels = Buffer.alloc(16 * 16 * 4);
+      for (let i = 0; i < pixels.length; i += 4) {
+        pixels[i] = 91;
+        pixels[i + 1] = 113;
+        pixels[i + 2] = 53;
+        pixels[i + 3] = 255;
+      }
+      tray = new Tray(
+        nativeImage.createFromBuffer(pixels, { width: 16, height: 16 }),
+      );
+      tray.setToolTip("Cobble");
+      tray.setContextMenu(
+        Menu.buildFromTemplate([
+          { label: "Open Cobble", click: () => main.show() },
+          {
+            label: "Show companion controls",
+            click: () => companion.showInactive(),
+          },
+          { label: "Quit Cobble", click: () => app.quit() },
+        ]),
+      );
+      tray.on("double-click", () => main.show());
+      idleTimer = setInterval(() => {
+        const previous = machine.mode;
+        machine.tick();
+        if (previous !== machine.mode && machine.mode === "idle") {
+          companion.webContents.send("cobble:pose", machine.mode);
+        }
+      }, 1000);
+      idleTimer.unref();
+      if (smoke) {
+        if (shutdownSmoke) {
+          const { runShutdownSmoke } = await import("./shutdown-smoke");
+          await runShutdownSmoke(
+            main,
+            companion,
+            tray,
+            service,
+            voiceShutdown.signal,
+            transcriptions,
+          );
+          return;
+        } else if (companionSmoke) {
+          const { runCompanionSmoke } = await import("./companion-smoke");
+          await runCompanionSmoke(companion);
+        } else {
+          const { runSmoke } = await import("./smoke");
+          await runSmoke(main, companion, service);
+        }
+        app.quit();
+      }
+    } catch (error) {
+      console.error(error);
+      if (smoke) {
+        await service?.close();
+        app.exit(1);
+      } else {
+        dialog.showErrorBox("Cobble could not start", String(error));
+        app.quit();
+      }
+    }
+  });
+}
+app.on("before-quit", (event) => {
+  // A rejected second instance never owned this process's services/pairing file.
+  if (!service || shutdownComplete) return;
+  event.preventDefault();
+  if (quitting) return;
+  quitting = true;
+  companionDrag.stop();
+  clearInterval(idleTimer);
+  clearInterval(ideTimer);
+  voiceShutdown.abort();
+  ideShutdown.abort();
+  for (const window of [main, companion, chatWindow]) {
+    if (window && !window.isDestroyed()) window.hide();
+  }
+  if (tray && !tray.isDestroyed()) tray.destroy();
+  void (async () => {
+    try {
+      await Promise.allSettled([...transcriptions]);
+      await Promise.allSettled([ideDiscovery?.stop()]);
+      await service.close();
+    } catch (error) {
+      console.error("Cobble shutdown cleanup failed", error);
+    } finally {
+      await rm(join(app.getPath("userData"), "ide-pairing.json"), {
+        force: true,
+      }).catch(() => {});
+      shutdownComplete = true;
+      app.quit();
+    }
+  })();
+});
+app.on("window-all-closed", () => {
+  if (quitting) app.quit();
+});

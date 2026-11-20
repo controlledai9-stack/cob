@@ -1,0 +1,45 @@
+appId: app.cobble.desktop
+productName: Cobble
+artifactName: Cobble-Setup-${version}-${arch}.${ext}
+asar: true
+npmRebuild: false
+directories:
+  output: release
+  buildResources: packaging
+files:
+  - dist/main/**
+  - dist/renderer/**
+  - assets/companion/**
+  - package.json
+  - "!node_modules/**"
+extraResources:
+  - from: dist/review-guard.exe
+    to: review/review-guard.exe
+  - from: dist/review-guard.exe.manifest.json
+    to: review/review-guard.exe.manifest.json
+  - from: dist/review-worker.cjs
+    to: review/review-worker.cjs
+  - from: dist/review-worker.cjs.manifest.json
+    to: review/review-worker.cjs.manifest.json
+  - from: resources/git
+    to: git
+  - from: resources/voice
+    to: voice
+  - from: resources/redist
+    to: redist
+  - from: resources/integrations
+    to: integrations
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  executableName: Cobble
+  signExecutable: false
+nsis:
+  oneClick: false
+  perMachine: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: false
+  include: packaging/installer.nsh

@@ -1,0 +1,72 @@
+{
+  "name": "cobble",
+  "version": "0.4.14",
+  "private": true,
+  "license": "UNLICENSED",
+  "author": "Cobble",
+  "description": "A local-first companion for teams building together",
+  "type": "module",
+  "main": "dist/main/main.cjs",
+  "bin": {
+    "cobble": "dist/cli.cjs"
+  },
+  "engines": {
+    "node": ">=24.13.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "node scripts/build.mjs",
+    "start": "electron .",
+    "relay": "node dist/relay.cjs",
+    "test:relay": "node scripts/test-relay.mjs",
+    "cli": "tsx src/cli.ts",
+    "typecheck": "tsc --noEmit",
+    "benchmark:plan-memory": "tsx scripts/benchmark-plan-memory.ts",
+    "evaluate:plan": "tsx scripts/evaluate-plan.ts",
+    "review:plan": "tsx scripts/review-plan.ts",
+    "format": "prettier --write src scripts test evaluation extensions/vscode/src",
+    "test": "tsx --test test/*.test.ts",
+    "test:desktop": "node scripts/smoke.mjs",
+    "test:companion": "node scripts/test-companion.mjs",
+    "test:shutdown": "node scripts/test-shutdown.mjs",
+    "test:packaged": "node scripts/test-packaged.mjs",
+    "test:voice": "tsx scripts/test-voice.ts",
+    "test:editors": "tsx scripts/test-editor-compatibility.ts",
+    "diagnose:integrations": "tsx scripts/diagnose-integrations.ts",
+    "test:soak": "tsx scripts/soak-backend.ts",
+    "verify:runtime": "node scripts/verify-runtime.mjs",
+    "prepare:runtime": "node scripts/prepare-runtime.mjs",
+    "bundle:extension": "node scripts/package-extension.mjs",
+    "dist:win": "npm run prepare:runtime && npm run verify:runtime && npm run build && npm run bundle:extension && electron-builder --win nsis --x64 --publish never",
+    "check": "npm run typecheck && npm test && npm run build",
+    "build:extension": "esbuild extensions/vscode/src/extension.ts --bundle --platform=node --format=cjs --external:vscode --outfile=extensions/vscode/dist/extension.cjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "@radix-ui/react-dropdown-menu": "^2.1.4",
+    "ajv": "^8.17.1",
+    "chokidar": "^4.0.3",
+    "diff": "^9.0.0",
+    "framer-motion": "^11.18.2",
+    "lucide-react": "^0.468.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "selfsigned": "^5.5.0",
+    "typescript": "^5.9.3",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@types/vscode": "^1.100.0",
+    "@types/ws": "^8.18.2",
+    "@vscode/vsce": "^4.0.0",
+    "electron": "^42.0.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.25.0",
+    "prettier": "^3.9.10",
+    "tsx": "^4.20.0",
+    "vite": "^7.0.0"
+  }
+}

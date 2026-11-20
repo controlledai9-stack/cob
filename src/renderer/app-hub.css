@@ -1,0 +1,70 @@
+.app-hub {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface-elevated);
+  overflow-wrap: anywhere;
+}
+
+.app-hub h3,
+.app-hub h4,
+.app-hub p {
+  margin: 0;
+}
+
+.app-hub-list {
+  display: grid;
+  gap: 0.65rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.app-hub-item {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.app-hub-detail {
+  white-space: pre-wrap;
+}
+.app-hub-actions,
+.app-hub-answer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.5rem;
+}
+.app-hub-answer label {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 0;
+}
+.app-hub-answer input {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.app-hub-human-path,
+.app-hub-error {
+  flex-basis: 100%;
+}
+.app-hub-error,
+.app-hub-item.is-error .app-hub-severity {
+  color: var(--danger);
+}
+.app-hub-severity {
+  text-transform: capitalize;
+  font-weight: 600;
+}
+.app-hub-item.is-warning {
+  border-inline-start: 3px solid var(--border);
+  padding-inline-start: 0.65rem;
+}
+.app-hub button:focus-visible,
+.app-hub input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
